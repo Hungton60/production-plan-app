@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+env/
+.env
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local data files (uploaded via UI)
+data.xlsx
+*.xlsx
+!requirements.txt
+
+# ngrok binary
+ngrok.exe
+ngrok
+
+# Streamlit secrets (nếu có)
+.streamlit/secrets.toml
+
+# Logs
+*.log
