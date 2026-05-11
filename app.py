@@ -6,7 +6,87 @@ from datetime import datetime, date, timedelta
 import re
 import io
 
+# ─── SX Input helpers (PHẢI định nghĩa trước st.set_page_config vì sidebar gọi sớm) ───
+def _safe_formula(val):
+    if val is None: return None
+    if isinstance(val, float) and pd.isna(val): return None
+    try: return float(val)
+    except (ValueError, TypeError):
+        s = str(val).strip()
+        if s.startswith("="):
+            try: return float(eval(s[1:]))
+            except Exception: pass
+    return None
+
+def parse_sx_input(xl_sx):
+    out = {"cong_doan": [], "may_moc": [], "nhan_luc": [],
+           "cap_monthly": None, "cap_weekly": None,
+           "bottleneck": None, "bottlenecks": [], "stage_caps": []}
+    sn_cd = next((s for s in xl_sx.sheet_names if "công đoạn" in s.lower()), None)
+    if sn_cd:
+        df = xl_sx.parse(sn_cd, header=None)
+        for _, row in df.iloc[2:].iterrows():
+            ma = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+            if not ma or ma in ("nan", "..."): continue
+            ten    = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else ""
+            gio_m2 = _safe_formula(row.iloc[2]) if len(row) > 2 else None
+            if gio_m2 is None or gio_m2 <= 0: continue
+            ghi_chu = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
+            out["cong_doan"].append({"ma": ma, "ten": ten, "gio_m2": round(gio_m2, 4), "ghi_chu": ghi_chu})
+    sn_mm = next((s for s in xl_sx.sheet_names if "máy" in s.lower() or "may" in s.lower()), None)
+    if sn_mm:
+        df = xl_sx.parse(sn_mm, header=None)
+        for _, row in df.iloc[2:].iterrows():
+            ma = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+            if not ma or ma == "nan": continue
+            try:
+                ten=str(row.iloc[1]).strip(); cong_doan=str(row.iloc[2]).strip()
+                sl=int(float(str(row.iloc[3]))); ca=int(float(str(row.iloc[4])))
+                gio_ca=int(float(str(row.iloc[5]))); hs=float(str(row.iloc[6]))/100
+            except Exception: continue
+            gio_thang = sl * ca * gio_ca * 26 * hs
+            out["may_moc"].append({"ma":ma,"ten":ten,"cong_doan":cong_doan,"sl":sl,"ca":ca,
+                                   "gio_ca":gio_ca,"hs_pct":round(hs*100),"gio_thang":round(gio_thang,1)})
+    sn_nl = next((s for s in xl_sx.sheet_names if "nhân" in s.lower() or "nhan" in s.lower()), None)
+    if sn_nl:
+        df = xl_sx.parse(sn_nl, header=None)
+        for _, row in df.iloc[2:].iterrows():
+            to = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+            if not to or to == "nan": continue
+            try:
+                cong_doan=str(row.iloc[1]).strip()
+                nv=int(float(str(row.iloc[2]))); ca=int(float(str(row.iloc[3])))
+                gio_ca=int(float(str(row.iloc[4]))); hs=float(str(row.iloc[5]))/100
+                gio_thang = nv * 26 * gio_ca * hs
+            except Exception: continue
+            out["nhan_luc"].append({"to":to,"cong_doan":cong_doan,"nv":nv,"ca":ca,
+                                    "gio_ca":gio_ca,"hs_pct":round(hs*100),"gio_thang":round(gio_thang,1)})
+    n = min(len(out["cong_doan"]), len(out["nhan_luc"]))
+    stage_caps = []
+    for i in range(n):
+        cd = out["cong_doan"][i]; nl = out["nhan_luc"][i]
+        if cd["gio_m2"] > 0:
+            cap = nl["gio_thang"] / cd["gio_m2"]
+            stage_caps.append({"cong_doan":cd["ten"],"to":nl["to"],"nv":nl["nv"],
+                                "gio_kd":nl["gio_thang"],"gio_m2":cd["gio_m2"],
+                                "cap_m2_thang":round(cap),"cap_m2_tuan":round(cap/4.33)})
+    if stage_caps:
+        _min_cap = min(s["cap_m2_thang"] for s in stage_caps)
+        _bns = [s["cong_doan"] for s in stage_caps if s["cap_m2_thang"] == _min_cap]
+        out["cap_monthly"]  = _min_cap
+        out["cap_weekly"]   = round(_min_cap / 4.33)
+        out["bottleneck"]   = _bns[0]
+        out["bottlenecks"]  = _bns
+        out["stage_caps"]   = stage_caps
+    return out
+
 st.set_page_config(page_title="Kế Hoạch SX – QDP", layout="wide", page_icon="🏭")
+
+# Đảm bảo mobile không thu nhỏ font / scale trang
+st.markdown(
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">',
+    unsafe_allow_html=True,
+)
 
 # ─── Custom CSS (chỉ style các class tự định nghĩa, không ghi đè Streamlit) ───
 st.markdown("""
@@ -69,10 +149,42 @@ st.markdown("""
   /* Đặt trang A3 ngang */
   @page { size: A3 landscape; margin: 8mm; }
 }
+
+/* ── Mobile responsive ────────────────────────────────────────────────── */
+/* Cảnh báo xoay màn hình – chỉ hiện ở điện thoại đứng */
+.rotate-hint {
+    display: none;
+    background: #6c5ce7;
+    color: white;
+    text-align: center;
+    padding: 10px 16px;
+    border-radius: 10px;
+    font-size: 0.9rem;
+    margin-bottom: 12px;
+    animation: pulse-hint 2s infinite;
+}
+@keyframes pulse-hint {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.75; }
+}
+@media screen and (max-width: 768px) and (orientation: portrait) {
+    .rotate-hint { display: block !important; }
+    .kpi-row { flex-direction: column; gap: 8px; }
+    .kpi-card { min-width: 100% !important; }
+    .dash-title h1 { font-size: 1.1rem !important; }
+    .dash-title p  { font-size: 0.78rem !important; }
+}
+@media screen and (max-width: 1024px) and (orientation: landscape) {
+    .kpi-card { min-width: 120px; padding: 12px 14px; }
+    .kpi-value { font-size: 1.5rem; }
+}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
+<div class="rotate-hint">
+  📱↩️ Xoay điện thoại nằm ngang để xem đầy đủ dashboard!
+</div>
 <div class="dash-title">
   <div style="font-size:2.2rem">🏭</div>
   <div>
@@ -84,10 +196,57 @@ st.markdown("""
 
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
-st.sidebar.header("⚙️ Tham số nhà máy")
-cap_monthly = st.sidebar.number_input(
-    "Năng suất tối đa (m²/tháng)", value=10000, step=500, min_value=1000
+
+# ── Tải file Năng Lực SX (đặt TRƯỚC các input để lấy giá trị default) ─────────
+st.sidebar.header("🔧 Năng Lực Sản Xuất")
+uploaded_sx = st.sidebar.file_uploader(
+    "📂 Tải file SX input.xlsx (công đoạn · máy móc · nhân lực)",
+    type=["xlsx", "xls"], key="sx_file",
+    help="File gồm 3 sheet: 'công đoạn', 'máy móc TB', 'nhân lực'"
 )
+
+sx_data = None
+_sx_cap_monthly = 10000   # default
+_sx_cap_weekly  = 2500    # default
+
+if uploaded_sx is not None:
+    _sx_fid = f"{uploaded_sx.name}_{uploaded_sx.size}"
+    # Cache kết quả parse vào session state để tránh parse lại mỗi lần rerun
+    if st.session_state.get("sx_file_id") != _sx_fid:
+        try:
+            _xl_sx = pd.ExcelFile(uploaded_sx)
+            _parsed = parse_sx_input(_xl_sx)
+            st.session_state["sx_file_id"]   = _sx_fid
+            st.session_state["sx_data"]      = _parsed
+        except Exception as _e:
+            st.sidebar.error(f"Lỗi đọc file SX: {_e}")
+            st.session_state["sx_data"] = None
+
+    sx_data = st.session_state.get("sx_data")
+    if sx_data and sx_data["cap_monthly"]:
+        _sx_cap_monthly = sx_data["cap_monthly"]
+        _sx_cap_weekly  = sx_data["cap_weekly"] or round(_sx_cap_monthly / 4.33)
+        _bns_sidebar = sx_data.get("bottlenecks") or [sx_data["bottleneck"]]
+        st.sidebar.success(
+            f"✅ **{_sx_cap_monthly:,} m²/tháng**  \n"
+            f"Nút thắt: *{' · '.join(_bns_sidebar)}*"
+        )
+    elif sx_data is not None:
+        st.sidebar.warning("⚠️ Không tính được năng suất từ file SX.")
+
+st.sidebar.divider()
+st.sidebar.header("⚙️ Tham số nhà máy")
+
+# Nếu đã có file SX → dùng giá trị tính được làm default; vẫn cho chỉnh tay
+_use_sx_cap = sx_data is not None and sx_data.get("cap_monthly") is not None
+cap_monthly = st.sidebar.number_input(
+    "Năng suất tối đa (m²/tháng)",
+    value=_sx_cap_monthly, step=500, min_value=100,
+    help="Tự động điền từ file SX input nếu đã tải." if _use_sx_cap else "",
+)
+if _use_sx_cap:
+    st.sidebar.caption("↑ Tự tính từ file SX input (có thể điều chỉnh thủ công)")
+
 horizon = st.sidebar.selectbox("Tầm nhìn kế hoạch (tháng)", [12, 18, 24, 36, 48, 60], index=1)
 show_weighted = st.sidebar.checkbox(
     "Tải trọng có xác suất",
@@ -98,13 +257,18 @@ show_weighted = st.sidebar.checkbox(
 st.sidebar.divider()
 st.sidebar.header("📅 Thông số kế hoạch tuần")
 cap_weekly = st.sidebar.number_input(
-    "Năng suất tối đa (m²/tuần)", value=2500, step=100, min_value=100
+    "Năng suất tối đa (m²/tuần)",
+    value=_sx_cap_weekly, step=100, min_value=100,
+    help="Tự động điền từ file SX input nếu đã tải." if _use_sx_cap else "",
 )
+if _use_sx_cap:
+    st.sidebar.caption("↑ Tự tính từ file SX input (có thể điều chỉnh thủ công)")
+
 max_indirect = st.sidebar.number_input(
-    "KS gián tiếp tối đa (người)", value=20, step=1, min_value=1
+    "KS gián tiếp tối đa (người)", value=40, step=1, min_value=1
 )
 avail_xuong = st.sidebar.number_input(
-    "Diện tích xưởng thực tế (m²)", value=5000, step=500, min_value=100
+    "Diện tích xưởng thực tế (m²)", value=20000, step=500, min_value=100
 )
 avail_kho_tp = st.sidebar.number_input(
     "Diện tích kho TP thực tế (m²)", value=2000, step=200, min_value=100
@@ -112,7 +276,7 @@ avail_kho_tp = st.sidebar.number_input(
 st.sidebar.divider()
 st.sidebar.subheader("📐 Hệ số mặt bằng")
 coeff_xuong = st.sidebar.number_input(
-    "Hệ số nhà xưởng (m²/m² SP)", value=2.0, step=0.1, min_value=0.1, format="%.2f",
+    "Hệ số nhà xưởng (m²/m² SP)", value=8.0, step=0.1, min_value=0.1, format="%.2f",
     help="Mặt bằng xưởng yêu cầu = m² SX/tuần × hệ số này"
 )
 coeff_kho_tp = st.sidebar.number_input(
@@ -387,7 +551,13 @@ if st.session_state.get("t1_rows"):
     st.session_state["t1_w_labels"]    = [p[0] for p in _pairs_pre]
     st.session_state["t1_weekly_load"] = _wload_pre
 
-tab_dash, tab_plan = st.tabs(["🏠 Dashboard Tổng Quan", "📊 Kế Hoạch Sản Xuất"])
+tab_dash, tab_plan, tab_nanluc, tab_nvcnl, tab_thucte = st.tabs([
+    "🏠 Dashboard Tổng Quan",
+    "📊 Kế Hoạch Sản Xuất",
+    "🔧 Năng Lực SX",
+    "📈 Nhu Cầu vs Năng Lực",
+    "📋 Tiến Độ Thực Tế",
+])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB DASHBOARD
@@ -440,6 +610,11 @@ with tab_dash:
             <div class="kpi-label">Tổng khối lượng</div>
             <div class="kpi-value" style="color:#00cec9;font-size:1.4rem">{total_m2:,.0f}</div>
             <div class="kpi-sub">m² (kỳ vọng)</div>
+          </div>
+          <div class="kpi-card" style="border-top-color:#00b894">
+            <div class="kpi-label">Năng lực SX</div>
+            <div class="kpi-value" style="color:#00b894;font-size:1.4rem">{cap_monthly:,}</div>
+            <div class="kpi-sub">m²/tháng {"· 🔴 " + (sx_data["bottleneck"] or "") if sx_data else "· (mặc định)"}</div>
           </div>
         </div>
         """, unsafe_allow_html=True)
@@ -754,6 +929,37 @@ with tab_dash:
             _fg_h = pio.to_html(_fg_print, include_plotlyjs=False, full_html=False,
                                 config={"displayModeBar": False})
 
+            # ── Biểu đồ Năng Lực SX (nếu đã tải file SX) ─────────────────────
+            _fstage_h = ""
+            _sx_print = st.session_state.get("sx_data")
+            if _sx_print and _sx_print.get("stage_caps"):
+                _bns_p = _sx_print.get("bottlenecks") or [_sx_print.get("bottleneck","")]
+                _cap_p = _sx_print["cap_monthly"] or 0
+                _sc_names = [s["cong_doan"] for s in _sx_print["stage_caps"]]
+                _sc_caps  = [s["cap_m2_thang"] for s in _sx_print["stage_caps"]]
+                _sc_colors = ["#e17055" if n in _bns_p else "#00b894" for n in _sc_names]
+                _fstage_p = go.Figure()
+                _fstage_p.add_trace(go.Bar(
+                    x=_sc_names, y=_sc_caps,
+                    marker_color=_sc_colors,
+                    text=[f"{v:,}" for v in _sc_caps],
+                    textposition="outside",
+                    hovertemplate="<b>%{x}</b><br>%{y:,} m²/tháng<extra></extra>",
+                ))
+                _fstage_p.add_hline(y=_cap_p, line_dash="dash", line_color="#e17055", line_width=1.5,
+                                    annotation_text=f"  Nút thắt: {_cap_p:,} m²",
+                                    annotation_font=dict(color="#e17055", size=9))
+                _fstage_p.update_layout(
+                    height=300, showlegend=False,
+                    margin=dict(t=20, r=120, b=50, l=10),
+                    paper_bgcolor="white", plot_bgcolor="white",
+                    font=dict(color="#333", size=9),
+                    xaxis=dict(tickfont=dict(size=8)),
+                    yaxis=dict(title=dict(text="m²/tháng", font=dict(size=8))),
+                )
+                _fstage_h = pio.to_html(_fstage_p, include_plotlyjs=False, full_html=False,
+                                        config={"displayModeBar": False})
+
             html_out = f"""<!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -818,10 +1024,11 @@ with tab_dash:
   <div class="kc y"><div class="kl">Cần chú ý</div><div class="kv" style="color:#c49000">{n_warn}</div><div class="ks">70–90%</div></div>
   <div class="kc g"><div class="kl">Bình thường</div><div class="kv" style="color:#00b894">{n_ok}</div><div class="ks">&lt;70%</div></div>
   <div class="kc"><div class="kl">Tải TB</div><div class="kv" style="color:#6c5ce7">{avg_u}%</div><div class="ks">năng suất 18T</div></div>
+  <div class="kc g"><div class="kl">Năng lực SX</div><div class="kv" style="color:#00b894">{cap_monthly:,}</div><div class="ks">m²/tháng · {" · ".join((_sx_print.get("bottlenecks") or [_sx_print["bottleneck"]]) if _sx_print else ["mặc định"])}</div></div>
 </div>
 <!-- 3-column layout -->
 <div class="main">
-  <!-- Cột trái: Tải trọng + Nhân lực -->
+  <!-- Cột trái: Tải trọng + Nhân lực + Mặt bằng -->
   <div class="col-side">
     <div class="chart-box">
       <div class="slabel">📊 Tải trọng nhà máy 18 tháng tới</div>
@@ -832,6 +1039,10 @@ with tab_dash:
       <div class="slabel">👥 Nhân lực kỹ thuật gián tiếp theo tuần</div>
       {_nl_h}
     </div>
+    <div class="chart-box">
+      <div class="slabel">🏗️ Mặt bằng xưởng &amp; kho TP theo tuần</div>
+      {_mb_h}
+    </div>
   </div>
   <!-- Cột giữa: Gantt -->
   <div class="col-center">
@@ -841,16 +1052,13 @@ with tab_dash:
       <div class="caption">🟢 Đã ký HĐ · 🟣 Khả năng cao · 🟠 Đang xét · 🔴 Hôm nay</div>
     </div>
   </div>
-  <!-- Cột phải: Pie + Mặt bằng -->
+  <!-- Cột phải: Pie + NLSX -->
   <div class="col-side">
     <div class="chart-box">
       <div class="slabel">🍩 Phân bổ KL theo XS%</div>
       {_fp_h}
     </div>
-    <div class="chart-box">
-      <div class="slabel">🏗️ Mặt bằng xưởng &amp; kho TP theo tuần</div>
-      {_mb_h}
-    </div>
+    {'<div class="chart-box" style="flex:1"><div class="slabel">🔧 Năng lực SX theo công đoạn (m²/tháng)</div>' + _fstage_h + '<div class="caption">🔴 Nút thắt · 🟢 Bình thường</div></div>' if _fstage_h else ''}
   </div>
 </div>
 </body>
@@ -1155,8 +1363,8 @@ with tab_plan:
                                 or df_row["XS%"] != orig["prob"]
                             )
                             if changed:
-                                return ["background-color:#fff3cd; color:#856404"] * len(df_row)
-                            return [""] * len(df_row)
+                                return ["background-color:#fff3cd;color:#856404"] * len(df_row)
+                            return ["color:#333333"] * len(df_row)
 
                         display_df = pd.DataFrame([{
                             "Tên dự án":       r["name"],
@@ -1923,7 +2131,7 @@ with tab_plan:
                         pd.DataFrame(_exp_proj).to_excel(
                             _writer, sheet_name="Dự án input", index=False
                         )
-                        # Sheet 2 & 3: copy nguyên từ file input
+                        # Sheet 2 & 3: copy nguyên từ file input chính
                         for _sn in ("Tech input", "Mặt bằng yêu cầu"):
                             if _sn in xl.sheet_names:
                                 xl.parse(_sn).to_excel(
@@ -1933,11 +2141,505 @@ with tab_plan:
                         df_summary.to_excel(
                             _writer, sheet_name="Tổng hợp tháng", index=False
                         )
+                        # Sheet 5-7: Năng lực SX (nếu đã tải file SX)
+                        _sx = st.session_state.get("sx_data")
+                        if _sx:
+                            if _sx["cong_doan"]:
+                                pd.DataFrame(_sx["cong_doan"]).rename(columns={
+                                    "ma": "Mã CĐ", "ten": "Tên công đoạn",
+                                    "gio_m2": "Giờ-công/m²", "ghi_chu": "Ghi chú"
+                                }).to_excel(_writer, sheet_name="Công đoạn", index=False)
+                            if _sx["may_moc"]:
+                                pd.DataFrame(_sx["may_moc"]).rename(columns={
+                                    "ma": "Mã máy", "ten": "Tên máy", "cong_doan": "Công đoạn",
+                                    "sl": "SL", "ca": "Ca/ngày", "gio_ca": "Giờ/ca",
+                                    "hs_pct": "Hiệu suất%", "gio_thang": "Giờ KD/tháng"
+                                }).to_excel(_writer, sheet_name="Máy móc TB", index=False)
+                            if _sx["nhan_luc"]:
+                                pd.DataFrame(_sx["nhan_luc"]).rename(columns={
+                                    "to": "Tổ", "cong_doan": "Công đoạn",
+                                    "nv": "Tổng NV", "ca": "Ca/ngày", "gio_ca": "Giờ/ca",
+                                    "hs_pct": "Hiệu suất%", "gio_thang": "Giờ KD/tháng"
+                                }).to_excel(_writer, sheet_name="Nhân lực", index=False)
+                            if _sx["stage_caps"]:
+                                pd.DataFrame(_sx["stage_caps"]).rename(columns={
+                                    "cong_doan": "Công đoạn", "to": "Tổ SX",
+                                    "nv": "Số NV", "gio_kd": "Giờ KD/tháng",
+                                    "gio_m2": "Giờ/m²", "cap_m2_thang": "Năng suất (m²/tháng)",
+                                    "cap_m2_tuan": "Năng suất (m²/tuần)"
+                                }).to_excel(_writer, sheet_name="Năng lực CĐ", index=False)
 
+                    _sx_label = " · Năng lực SX" if st.session_state.get("sx_data") else ""
                     st.download_button(
-                        "💾 Xuất Excel (Dự án input · Tech input · Mặt bằng yêu cầu · Tổng hợp tháng)",
+                        f"💾 Xuất Excel (Dự án input · Tech input · Mặt bằng yêu cầu · Tổng hợp tháng{_sx_label})",
                         data=_full_buf.getvalue(),
                         file_name="ke_hoach_sx.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="t1_full_export",
                     )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB NĂNG LỰC SX
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_nanluc:
+    st.header("🔧 Phân Tích Năng Lực Sản Xuất")
+
+    _sx = st.session_state.get("sx_data")
+
+    if _sx is None:
+        st.info(
+            "⬅️ Vui lòng **tải file SX input.xlsx** ở sidebar bên trái  \n"
+            "*(3 sheet: công đoạn · máy móc TB · nhân lực)*"
+        )
+    else:
+        # ── KPI row ───────────────────────────────────────────────────────────
+        _total_nv  = sum(nl["nv"]  for nl in _sx["nhan_luc"])
+        _total_may = sum(mm["sl"]  for mm in _sx["may_moc"])
+        _n_cd      = len(_sx["cong_doan"])
+        _cap_m     = _sx["cap_monthly"] or 0
+        _cap_w     = _sx["cap_weekly"]  or 0
+        _bn        = _sx["bottleneck"]  or "—"
+        _bns_list  = _sx.get("bottlenecks") or ([_bn] if _bn != "—" else [])
+
+        st.markdown(f"""
+        <div class="kpi-row">
+          <div class="kpi-card" style="border-top-color:#6c5ce7">
+            <div class="kpi-label">Tổng công nhân SX</div>
+            <div class="kpi-value" style="color:#6c5ce7">{_total_nv}</div>
+            <div class="kpi-sub">người ({len(_sx["nhan_luc"])} tổ)</div>
+          </div>
+          <div class="kpi-card" style="border-top-color:#0984e3">
+            <div class="kpi-label">Tổng máy móc TB</div>
+            <div class="kpi-value" style="color:#0984e3">{_total_may}</div>
+            <div class="kpi-sub">máy ({len(_sx["may_moc"])} loại)</div>
+          </div>
+          <div class="kpi-card" style="border-top-color:#00b894">
+            <div class="kpi-label">Năng suất tháng</div>
+            <div class="kpi-value green">{_cap_m:,}</div>
+            <div class="kpi-sub">m²/tháng (nút thắt)</div>
+          </div>
+          <div class="kpi-card" style="border-top-color:#fdcb6e">
+            <div class="kpi-label">Năng suất tuần</div>
+            <div class="kpi-value" style="color:#c49000">{_cap_w:,}</div>
+            <div class="kpi-sub">m²/tuần (≈ tháng÷4.33)</div>
+          </div>
+          <div class="kpi-card red">
+            <div class="kpi-label">Nút thắt chuỗi SX</div>
+            <div class="kpi-value red" style="font-size:1.0rem">{"<br>".join(_bns_list) if _bns_list else "—"}</div>
+            <div class="kpi-sub">công đoạn giới hạn năng suất</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.divider()
+
+        # ── Bảng năng suất từng công đoạn ────────────────────────────────────
+        st.subheader("📊 Năng suất theo công đoạn (Nhân lực)")
+        if _sx["stage_caps"]:
+            _df_stage = pd.DataFrame(_sx["stage_caps"])
+            _df_stage = _df_stage.rename(columns={
+                "cong_doan":    "Công đoạn",
+                "to":           "Tổ SX",
+                "nv":           "Số NV",
+                "gio_kd":       "Giờ KD/tháng",
+                "gio_m2":       "Giờ-công/m²",
+                "cap_m2_thang": "Năng suất (m²/tháng)",
+                "cap_m2_tuan":  "Năng suất (m²/tuần)",
+            })
+            _df_stage["% so nút thắt"] = (
+                _df_stage["Năng suất (m²/tháng)"] / _cap_m * 100
+            ).round(1)
+
+            def _style_stage(row):
+                if row["Công đoạn"] in _bns_list:
+                    return ["background-color:#fff0f0;color:#c0392b;font-weight:bold"] * len(row)
+                if row["% so nút thắt"] < 150:
+                    return ["background-color:#fff8e1;color:#333333"] * len(row)
+                return ["color:#333333"] * len(row)
+
+            st.dataframe(
+                _df_stage.style.apply(_style_stage, axis=1)
+                    .format({
+                        "Giờ KD/tháng":       "{:,.1f}",
+                        "Giờ-công/m²":        "{:.4f}",
+                        "Năng suất (m²/tháng)": "{:,}",
+                        "Năng suất (m²/tuần)":  "{:,}",
+                        "% so nút thắt":       "{:.1f}%",
+                    }),
+                use_container_width=True, hide_index=True,
+            )
+
+            # ── Biểu đồ bar: năng suất từng công đoạn ────────────────────────
+            st.markdown("**📈 Biểu đồ năng suất công đoạn**")
+            _colors_bar = [
+                "#e17055" if r in _bns_list else "#00b894"
+                for r in _df_stage["Công đoạn"]
+            ]
+            _fig_stage = go.Figure()
+            _fig_stage.add_trace(go.Bar(
+                x=_df_stage["Công đoạn"],
+                y=_df_stage["Năng suất (m²/tháng)"],
+                marker_color=_colors_bar,
+                text=_df_stage["Năng suất (m²/tháng)"].apply(lambda v: f"{v:,}"),
+                textposition="outside",
+                hovertemplate=(
+                    "<b>%{x}</b><br>"
+                    "Năng suất: %{y:,} m²/tháng<extra></extra>"
+                ),
+            ))
+            _fig_stage.add_hline(
+                y=_cap_m, line_dash="dash", line_color="#e17055", line_width=2,
+                annotation_text=f"  Nút thắt: {_cap_m:,} m²/tháng",
+                annotation_font_color="#e17055",
+                annotation_position="right",
+            )
+            _fig_stage.update_layout(
+                height=400, showlegend=False,
+                xaxis_title="Công đoạn",
+                yaxis_title="Năng suất (m²/tháng)",
+                margin=dict(t=30, r=200, b=60, l=80),
+            )
+            st.plotly_chart(_fig_stage, use_container_width=True)
+
+            # ── Chú thích giải thích ──────────────────────────────────────────
+            st.info(
+                "🔴 **Nút thắt (màu đỏ)** = công đoạn có năng suất thấp nhất → giới hạn toàn chuỗi sản xuất.  \n"
+                "Để tăng năng suất nhà máy, cần tăng cường tổ/máy tại công đoạn này trước tiên."
+            )
+        else:
+            st.warning("Không đủ dữ liệu để tính năng suất theo công đoạn.")
+
+        st.divider()
+
+        # ── Hai cột: Nhân lực & Máy móc ──────────────────────────────────────
+        _col_nl, _col_mm = st.columns(2)
+
+        with _col_nl:
+            st.subheader("👷 Chi tiết nhân lực")
+            if _sx["nhan_luc"]:
+                _df_nl = pd.DataFrame(_sx["nhan_luc"]).rename(columns={
+                    "to": "Tổ", "cong_doan": "Công đoạn",
+                    "nv": "Tổng NV", "ca": "Ca/ngày",
+                    "gio_ca": "Giờ/ca", "hs_pct": "Hiệu suất%",
+                    "gio_thang": "Giờ KD/tháng",
+                })
+                st.dataframe(
+                    _df_nl.style.format({"Giờ KD/tháng": "{:,.1f}"}),
+                    use_container_width=True, hide_index=True,
+                )
+                _total_gio_nl = sum(nl["gio_thang"] for nl in _sx["nhan_luc"])
+                st.metric("Tổng giờ khả dụng/tháng (toàn NM)", f"{_total_gio_nl:,.0f} giờ")
+            else:
+                st.info("Chưa có dữ liệu nhân lực.")
+
+        with _col_mm:
+            st.subheader("⚙️ Chi tiết máy móc thiết bị")
+            if _sx["may_moc"]:
+                _df_mm = pd.DataFrame(_sx["may_moc"]).rename(columns={
+                    "ma": "Mã máy", "ten": "Tên máy",
+                    "cong_doan": "Công đoạn", "sl": "SL máy",
+                    "ca": "Ca/ngày", "gio_ca": "Giờ/ca",
+                    "hs_pct": "Hiệu suất%", "gio_thang": "Giờ KD/tháng",
+                })
+                st.dataframe(
+                    _df_mm.style.format({"Giờ KD/tháng": "{:,.1f}"}),
+                    use_container_width=True, hide_index=True,
+                )
+                _total_gio_mm = sum(mm["gio_thang"] for mm in _sx["may_moc"])
+                st.metric("Tổng giờ máy khả dụng/tháng", f"{_total_gio_mm:,.0f} giờ")
+            else:
+                st.info("Chưa có dữ liệu máy móc.")
+
+        st.divider()
+
+        st.divider()
+
+        # ── What-if Simulation ────────────────────────────────────────────────
+        st.subheader("🎛️ What-if: Điều chỉnh nhân lực & xem năng suất mới")
+        st.caption("Thay đổi số NV từng tổ để xem năng suất thay đổi thế nào. Không ảnh hưởng dữ liệu gốc.")
+
+        _wif_cols = st.columns(min(len(_sx["nhan_luc"]), 4))
+        _wif_nv = {}
+        for _idx, _nl in enumerate(_sx["nhan_luc"]):
+            with _wif_cols[_idx % len(_wif_cols)]:
+                _wif_nv[_nl["to"]] = st.number_input(
+                    f"NV – {_nl['to']}",
+                    value=_nl["nv"], min_value=1, max_value=500, step=1,
+                    key=f"wif_{_idx}",
+                )
+
+        # Tính lại năng suất với số NV mới
+        _wif_stages = []
+        for i, sc in enumerate(_sx["stage_caps"]):
+            _nl_orig = _sx["nhan_luc"][i] if i < len(_sx["nhan_luc"]) else None
+            if _nl_orig is None:
+                _wif_stages.append(sc); continue
+            _to_name = _nl_orig["to"]
+            _new_nv  = _wif_nv.get(_to_name, _nl_orig["nv"])
+            _new_gio  = _new_nv * _nl_orig["ca"] * _nl_orig["gio_ca"] * 26 * (_nl_orig["hs_pct"] / 100)
+            _new_cap  = round(_new_gio / sc["gio_m2"]) if sc["gio_m2"] > 0 else sc["cap_m2_thang"]
+            _wif_stages.append({**sc, "cap_m2_thang": _new_cap, "cap_m2_tuan": round(_new_cap / 4.33),
+                                 "nv": _new_nv})
+
+        _wif_min  = min(s["cap_m2_thang"] for s in _wif_stages)
+        _wif_bns  = [s["cong_doan"] for s in _wif_stages if s["cap_m2_thang"] == _wif_min]
+        _delta_cap = _wif_min - _cap_m
+
+        _wc1, _wc2, _wc3 = st.columns(3)
+        _wc1.metric("Năng suất mới (m²/tháng)", f"{_wif_min:,}",
+                    delta=f"{_delta_cap:+,}", delta_color="normal")
+        _wc2.metric("Nút thắt mới", " · ".join(_wif_bns))
+        _wc3.metric("Tuần (ước tính)", f"{round(_wif_min/4.33):,} m²")
+
+        # Biểu đồ so sánh gốc vs what-if
+        _wif_fig = go.Figure()
+        _cd_names = [s["cong_doan"] for s in _sx["stage_caps"]]
+        _orig_caps = [s["cap_m2_thang"] for s in _sx["stage_caps"]]
+        _new_caps  = [s["cap_m2_thang"] for s in _wif_stages]
+        _wif_fig.add_trace(go.Bar(x=_cd_names, y=_orig_caps, name="Gốc",
+                                  marker_color="#a29bfe", opacity=0.7))
+        _wif_fig.add_trace(go.Bar(x=_cd_names, y=_new_caps, name="What-if",
+                                  marker_color="#00b894", opacity=0.85))
+        _wif_fig.add_hline(y=_wif_min, line_dash="dash", line_color="#e17055", line_width=2,
+                           annotation_text=f"  Nút thắt mới: {_wif_min:,}",
+                           annotation_font_color="#e17055")
+        _wif_fig.update_layout(
+            barmode="group", height=350,
+            legend=dict(orientation="h", y=1.02, x=0),
+            xaxis_title="Công đoạn", yaxis_title="Năng suất (m²/tháng)",
+            margin=dict(t=40, b=60, r=200),
+            plot_bgcolor="white", paper_bgcolor="white", font=dict(color="#333"),
+        )
+        st.plotly_chart(_wif_fig, use_container_width=True)
+
+        # ── Phân tích tải trọng theo dự án (nếu đã có file dự án) ─────────────
+        _rows_proj = st.session_state.get("t1_rows", [])
+        if _rows_proj and _sx["stage_caps"]:
+            st.subheader("📋 Phân tích tải trọng công đoạn theo tháng hiện tại")
+            # Tháng hiện tại
+            _today = datetime(datetime.today().year, datetime.today().month, 1)
+            _m2_thang = sum(
+                r["m2"] / max(1, (
+                    (datetime(r["end"].year, r["end"].month, 1) -
+                     datetime(r["start"].year, r["start"].month, 1)).days // 30 + 1
+                ))
+                for r in _rows_proj
+                if (
+                    datetime(r["start"].year, r["start"].month, 1) <= _today
+                    <= datetime(r["end"].year, r["end"].month, 1)
+                )
+            ) * (show_weighted and 1 or 1)
+
+            if _m2_thang > 0:
+                st.caption(
+                    f"Khối lượng SX ước tính tháng hiện tại: **{_m2_thang:,.0f} m²**  "
+                    f"(trung bình từ {len(_rows_proj)} dự án đang chạy)"
+                )
+                _load_rows = []
+                for sc in _sx["stage_caps"]:
+                    _pct = _m2_thang / sc["cap_m2_thang"] * 100 if sc["cap_m2_thang"] > 0 else 0
+                    _load_rows.append({
+                        "Công đoạn":             sc["cong_doan"],
+                        "Tổ SX":                 sc["to"],
+                        "Năng suất (m²/tháng)":  sc["cap_m2_thang"],
+                        "Nhu cầu tháng này (m²)": round(_m2_thang),
+                        "% Tải trọng":            round(_pct, 1),
+                        "Trạng thái":             (
+                            "🔴 QUÁ TẢI"       if _pct >= 100 else
+                            "🟠 Căng tiến độ"  if _pct >= 85  else
+                            "🟡 Cần chú ý"     if _pct >= 70  else
+                            "🟢 Bình thường"
+                        ),
+                    })
+                _df_load = pd.DataFrame(_load_rows)
+                st.dataframe(
+                    _df_load.style.format({
+                        "Năng suất (m²/tháng)":   "{:,}",
+                        "Nhu cầu tháng này (m²)": "{:,}",
+                        "% Tải trọng":            "{:.1f}%",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
+            else:
+                st.info("Không có dự án nào đang chạy trong tháng hiện tại.")
+        elif not _rows_proj:
+            st.caption("💡 Tải thêm file dự án ở tab **📊 Kế Hoạch Sản Xuất** để xem phân tích tải trọng theo công đoạn.")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB NHU CẦU VS NĂNG LỰC
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_nvcnl:
+    st.header("📈 Nhu Cầu vs Năng Lực Sản Xuất theo tháng")
+    rows_nvcnl = st.session_state.get("t1_rows", [])
+    if not rows_nvcnl:
+        st.info("⬅️ Vui lòng vào tab **📊 Kế Hoạch Sản Xuất** và tải file Excel trước.")
+    else:
+        monthly_demand: dict = {}
+        for r in rows_nvcnl:
+            start = datetime(r["start"].year, r["start"].month, 1)
+            end   = datetime(r["end"].year,   r["end"].month,   1)
+            factor = (r["prob"] / 100) if show_weighted else 1.0
+            ms = months_range(start, end)
+            if not ms:
+                continue
+            m2pm = r["m2"] * factor / len(ms)
+            for m in ms:
+                monthly_demand[m] = monthly_demand.get(m, 0) + m2pm
+
+        if not monthly_demand:
+            st.warning("Không có dữ liệu nhu cầu.")
+        else:
+            today_m = datetime(datetime.today().year, datetime.today().month, 1)
+            cutoff  = today_m + pd.DateOffset(months=horizon)
+            months_sorted = sorted(k for k in monthly_demand if k <= cutoff)
+            labels  = [m.strftime("%m/%Y") for m in months_sorted]
+            demands = [monthly_demand[m] for m in months_sorted]
+
+            fig_nvcnl = go.Figure()
+            bar_colors = [
+                "#e17055" if d > cap_monthly else
+                "#fd9644" if d > cap_monthly * 0.85 else
+                "#00b894"
+                for d in demands
+            ]
+            fig_nvcnl.add_trace(go.Bar(
+                x=labels, y=demands, name="Nhu cầu (m²/tháng)",
+                marker_color=bar_colors,
+                text=[f"{d:,.0f}" for d in demands], textposition="outside",
+                hovertemplate="<b>%{x}</b><br>Nhu cầu: %{y:,.0f} m²<extra></extra>",
+            ))
+            fig_nvcnl.add_trace(go.Scatter(
+                x=labels, y=[cap_monthly] * len(months_sorted),
+                name=f"Năng lực tối đa ({cap_monthly:,} m²)",
+                mode="lines", line=dict(color="#e17055", dash="dash", width=2),
+            ))
+            fig_nvcnl.update_layout(
+                height=480,
+                legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+                xaxis_title="Tháng", yaxis_title="Khối lượng (m²)",
+                xaxis=dict(tickangle=45), margin=dict(t=50, b=80),
+                plot_bgcolor="white", paper_bgcolor="white", font=dict(color="#333"),
+            )
+            st.plotly_chart(fig_nvcnl, use_container_width=True)
+
+            st.subheader("📊 Thặng dư / Thiếu hụt năng lực theo tháng")
+            nvcnl_rows = []
+            for lbl, d in zip(labels, demands):
+                diff = cap_monthly - d
+                pct  = d / cap_monthly * 100
+                nvcnl_rows.append({
+                    "Tháng": lbl,
+                    "Nhu cầu (m²)": round(d),
+                    "Năng lực (m²)": cap_monthly,
+                    "Thặng dư / Thiếu hụt (m²)": round(diff),
+                    "% Tải trọng": round(pct, 1),
+                    "Trạng thái": (
+                        "🔴 QUÁ TẢI"      if pct >= 100 else
+                        "🟠 Căng tiến độ" if pct >= 85  else
+                        "🟡 Cần chú ý"    if pct >= 70  else
+                        "🟢 Bình thường"
+                    ),
+                })
+            df_nvcnl = pd.DataFrame(nvcnl_rows)
+            st.dataframe(
+                df_nvcnl.style.format({
+                    "Nhu cầu (m²)":               "{:,}",
+                    "Năng lực (m²)":              "{:,}",
+                    "Thặng dư / Thiếu hụt (m²)":  "{:+,}",
+                    "% Tải trọng":                "{:.1f}%",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+
+            n_over = sum(1 for d in demands if d > cap_monthly)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Tháng quá tải",    f"{n_over} tháng",
+                      delta=f"-{n_over}" if n_over else None, delta_color="inverse")
+            c2.metric("Tháng bình thường", f"{len(demands) - n_over} tháng")
+            c3.metric("Năng lực tối đa",  f"{cap_monthly:,} m²/tháng")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB TIẾN ĐỘ THỰC TẾ
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_thucte:
+    st.header("📋 Tiến Độ Thực Tế vs Kế Hoạch")
+    rows_tt = st.session_state.get("t1_rows", [])
+    if not rows_tt:
+        st.info("⬅️ Vui lòng vào tab **📊 Kế Hoạch Sản Xuất** và tải file Excel trước.")
+    else:
+        monthly_plan: dict = {}
+        for r in rows_tt:
+            start = datetime(r["start"].year, r["start"].month, 1)
+            end   = datetime(r["end"].year,   r["end"].month,   1)
+            factor = (r["prob"] / 100) if show_weighted else 1.0
+            ms = months_range(start, end)
+            if not ms:
+                continue
+            m2pm = r["m2"] * factor / len(ms)
+            for m in ms:
+                monthly_plan[m] = monthly_plan.get(m, 0) + m2pm
+
+        today_m  = datetime(datetime.today().year, datetime.today().month, 1)
+        cutoff_t = today_m + pd.DateOffset(months=12)
+        months_tt = sorted(k for k in monthly_plan if k <= cutoff_t)
+
+        if not months_tt:
+            st.warning("Không có dữ liệu kế hoạch.")
+        else:
+            labels_tt = [m.strftime("%m/%Y") for m in months_tt]
+            plans_tt  = [round(monthly_plan[m]) for m in months_tt]
+            actuals_saved = st.session_state.get("tt_actuals", {})
+
+            input_rows = [
+                {"Tháng": lbl, "Kế hoạch (m²)": p, "Thực tế (m²)": actuals_saved.get(lbl, 0)}
+                for lbl, p in zip(labels_tt, plans_tt)
+            ]
+            st.subheader("✏️ Nhập sản lượng thực tế")
+            edited = st.data_editor(
+                pd.DataFrame(input_rows),
+                column_config={
+                    "Tháng":         st.column_config.TextColumn("Tháng", disabled=True),
+                    "Kế hoạch (m²)": st.column_config.NumberColumn("KH (m²)", disabled=True, format="%d"),
+                    "Thực tế (m²)":  st.column_config.NumberColumn("Thực tế (m²)", min_value=0, step=100, format="%d"),
+                },
+                use_container_width=True, hide_index=True, key="tt_editor",
+            )
+            st.session_state["tt_actuals"] = {row["Tháng"]: row["Thực tế (m²)"] for _, row in edited.iterrows()}
+
+            actuals_list = [st.session_state["tt_actuals"].get(lbl, 0) for lbl in labels_tt]
+            cum_plan, cum_act = [], []
+            cp = ca_val = 0
+            for p, a in zip(plans_tt, actuals_list):
+                cp += p; ca_val += a
+                cum_plan.append(cp); cum_act.append(ca_val)
+
+            fig_tt = go.Figure()
+            fig_tt.add_trace(go.Bar(x=labels_tt, y=plans_tt, name="Kế hoạch (m²/tháng)",
+                                    marker_color="#a29bfe", opacity=0.7))
+            fig_tt.add_trace(go.Bar(x=labels_tt, y=actuals_list, name="Thực tế (m²/tháng)",
+                                    marker_color="#00b894", opacity=0.85))
+            fig_tt.add_trace(go.Scatter(x=labels_tt, y=cum_plan, name="Lũy kế kế hoạch",
+                                        yaxis="y2", mode="lines+markers",
+                                        line=dict(color="#6c5ce7", dash="dot", width=2)))
+            fig_tt.add_trace(go.Scatter(x=labels_tt, y=cum_act, name="Lũy kế thực tế",
+                                        yaxis="y2", mode="lines+markers",
+                                        line=dict(color="#e17055", width=2), marker=dict(size=7)))
+            fig_tt.update_layout(
+                barmode="group", height=480,
+                yaxis=dict(title="m²/tháng"),
+                yaxis2=dict(title="Lũy kế (m²)", overlaying="y", side="right", showgrid=False),
+                legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+                xaxis=dict(tickangle=45), margin=dict(t=50, b=80),
+                plot_bgcolor="white", paper_bgcolor="white", font=dict(color="#333"),
+            )
+            st.plotly_chart(fig_tt, use_container_width=True)
+
+            total_plan_tt   = sum(plans_tt)
+            total_actual_tt = sum(actuals_list)
+            done_months     = sum(1 for a in actuals_list if a > 0)
+            pct_done        = total_actual_tt / total_plan_tt * 100 if total_plan_tt else 0
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Tổng KH (m²)",      f"{total_plan_tt:,}")
+            c2.metric("Tổng thực tế (m²)",  f"{total_actual_tt:,}")
+            c3.metric("% Hoàn thành",       f"{pct_done:.1f}%")
+            c4.metric("Tháng đã nhập",      f"{done_months}/{len(labels_tt)}")
