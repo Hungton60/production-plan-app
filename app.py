@@ -351,12 +351,12 @@ def parse_projects(df):
     #   col 2 = Khối lượng (m²)
     #   col 3 = Ngày bắt đầu (serial hoặc datetime)
     #   col END = Ngày hoàn thành  (auto-detect: 4 hoặc 5)
-    #   col END+1 = Ghi chú (xác suất)
+    #   col END+1 = XS hệ số (số 0–1) HOẶC Ghi chú (text có %)
     end_col  = detect_end_col(df)
-    note_col = end_col + 1
+    xs_col   = end_col + 1   # cột XS hoặc ghi chú
 
     projects = []
-    skip = {"nan", "", "TÊN DỰ ÁN", "GHI CHÚ:"}
+    skip = {"nan", "", "TÊN DỰ ÁN", "GHI CHÚ:", "XS (hệ số)"}
     for _, row in df.iterrows():
         if len(row) <= end_col:
             continue
@@ -369,10 +369,24 @@ def parse_projects(df):
             continue
         start = parse_date(row.iloc[3])
         end   = parse_date(row.iloc[end_col])
-        note  = str(row.iloc[note_col]).strip() if len(row) > note_col and pd.notna(row.iloc[note_col]) else ""
         if start is None or end is None:
             continue
-        prob = extract_prob(note)
+
+        # Đọc xác suất: ưu tiên cột XS số (0–1 hoặc 1–100), fallback text
+        prob = 100
+        if len(row) > xs_col and pd.notna(row.iloc[xs_col]):
+            _xs = row.iloc[xs_col]
+            try:
+                _xsf = float(_xs)
+                if 0 < _xsf <= 1:        # hệ số kiểu 0.5 / 0.9 / 1.0
+                    prob = round(_xsf * 100)
+                elif 1 < _xsf <= 100:    # % kiểu 50 / 90 / 100
+                    prob = round(_xsf)
+                else:
+                    prob = extract_prob(str(_xs))
+            except (ValueError, TypeError):
+                prob = extract_prob(str(_xs))
+
         projects.append({
             "name": name, "m2": m2,
             "start": start, "end": end,
@@ -765,19 +779,19 @@ with tab_dash:
             tickmode="array",
             tickvals=_all_proj_names_g,
             ticktext=_all_proj_names_g,
-            tickfont=dict(size=10, color="#333"), color="#333",
+            tickfont=dict(size=9, color="#333"), color="#333",
         )
         fig_g.update_xaxes(
             range=[x_min, x_max],
             dtick="M1", tickformat="%m/%Y", tickangle=45,
-            tickfont=dict(size=9, color="#333"), color="#333",
+            tickfont=dict(size=8, color="#333"), color="#333",
         )
         fig_g.update_layout(
-            height=max(180, len(projs) * 36 + 100),
+            height=max(150, len(projs) * 26 + 80),
             plot_bgcolor="white", paper_bgcolor="white",
             legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0,
-                        font=dict(color="#333")),
-            margin=dict(l=20, r=20, t=50, b=60),
+                        font=dict(size=10, color="#333")),
+            margin=dict(l=10, r=20, t=36, b=50),
             font=dict(family="Inter, sans-serif", color="#333"),
         )
         st.plotly_chart(fig_g, use_container_width=True)
@@ -868,7 +882,7 @@ with tab_dash:
             _SIDE_W   = 420   # px chiều rộng cột trái/phải
             _CENTER_W = 650   # px chiều rộng cột giữa (Gantt)
             _SIDE_CH  = 420   # px chiều cao mỗi biểu đồ nhỏ (2 cái/cột)
-            _GANTT_H  = max(800, len(projs) * 32 + 80)   # đủ chỗ cho tất cả dự án, vừa 1 trang
+            _GANTT_H  = max(500, len(projs) * 28 + 80)   # đủ chỗ cho tất cả dự án
 
             # Rebuild figures
             _fb_p = go.Figure(fig_bar)
@@ -1702,7 +1716,7 @@ with tab_plan:
                         dtick="M1",
                         tickformat="%m/%Y",
                         tickangle=45,
-                        tickfont=dict(size=9),
+                        tickfont=dict(size=8),
                     )
                     fig_gantt1.update_layout(
                         yaxis=dict(
@@ -1710,14 +1724,15 @@ with tab_plan:
                             tickmode="array",
                             tickvals=all_project_names,
                             ticktext=all_project_names,
-                            tickfont=dict(size=10),
+                            tickfont=dict(size=9),
                             automargin=True,
                         ),
-                        height=max(500, len(projects) * 46 + 200),
-                        margin=dict(l=10, r=20, t=40, b=80),
+                        height=max(380, len(projects) * 28 + 100),
+                        margin=dict(l=10, r=20, t=36, b=60),
                         legend=dict(
                             title="Xác suất",
                             orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0,
+                            font=dict(size=10),
                         ),
                         plot_bgcolor="white",
                     )
@@ -1770,20 +1785,8 @@ with tab_plan:
                     with st.expander(
                         "➕ Nhập thông tin dự án mới để kiểm tra năng lực nhà máy", expanded=True
                     ):
-                        sim_scenario = st.radio(
-                            "Kịch bản tải nền (dự án hiện có):",
-                            [
-                                "Kỳ vọng — dùng xác suất thực tế (mặc định)",
-                                "Cao nhất — 100% tất cả dự án",
-                            ],
-                            index=0,
-                            horizontal=True,
-                            key="sim_scenario",
-                        )
-                        sim_load = (
-                            load_data_w if sim_scenario.startswith("Kỳ") else load_data_full
-                        )
-                        sim_label = "Tải nền kỳ vọng (m²)" if sim_scenario.startswith("Kỳ") else "Tải nền cao nhất (m²)"
+                        sim_load  = load_data_w
+                        sim_label = "Tải nền kỳ vọng (m²)"
 
                         c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
                         with c1:
