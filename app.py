@@ -19,65 +19,108 @@ def _safe_formula(val):
     return None
 
 def parse_sx_input(xl_sx):
-    out = {"cong_doan": [], "may_moc": [], "nhan_luc": [],
+    """Parse new SX input format with 2 sheets:
+    - máy móc TB: direct m²/hour/machine productivity
+    - nhân lực: direct m²/hour/person productivity
+    """
+    out = {"may_moc": [], "nhan_luc": [], "stage_caps": [],
            "cap_monthly": None, "cap_weekly": None,
-           "bottleneck": None, "bottlenecks": [], "stage_caps": []}
-    sn_cd = next((s for s in xl_sx.sheet_names if "công đoạn" in s.lower()), None)
-    if sn_cd:
-        df = xl_sx.parse(sn_cd, header=None)
-        for _, row in df.iloc[2:].iterrows():
-            ma = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
-            if not ma or ma in ("nan", "..."): continue
-            ten    = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else ""
-            gio_m2 = _safe_formula(row.iloc[2]) if len(row) > 2 else None
-            if gio_m2 is None or gio_m2 <= 0: continue
-            ghi_chu = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
-            out["cong_doan"].append({"ma": ma, "ten": ten, "gio_m2": round(gio_m2, 4), "ghi_chu": ghi_chu})
+           "bottleneck": None, "bottlenecks": []}
+    
+    # ── Sheet 1: Máy móc TB ───────────────────────────────────────────────
+    # Cols: Mã máy(0), Tên máy(1), Số lượng máy(2), Số người/máy(3),
+    #       Năng suất m2/giờ/máy(4), Ca/ngày(5), Giờ/ca(6), Hiệu suất%(7)
     sn_mm = next((s for s in xl_sx.sheet_names if "máy" in s.lower() or "may" in s.lower()), None)
+    machine_caps = {}  # {tên_máy: capacity_m2_month}
     if sn_mm:
         df = xl_sx.parse(sn_mm, header=None)
         for _, row in df.iloc[2:].iterrows():
+            if len(row) < 8: continue
             ma = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
             if not ma or ma == "nan": continue
             try:
-                ten=str(row.iloc[1]).strip(); cong_doan=str(row.iloc[2]).strip()
-                sl=int(float(str(row.iloc[3]))); ca=int(float(str(row.iloc[4])))
-                gio_ca=int(float(str(row.iloc[5]))); hs=float(str(row.iloc[6]))/100
-            except Exception: continue
-            gio_thang = sl * ca * gio_ca * 26 * hs
-            out["may_moc"].append({"ma":ma,"ten":ten,"cong_doan":cong_doan,"sl":sl,"ca":ca,
-                                   "gio_ca":gio_ca,"hs_pct":round(hs*100),"gio_thang":round(gio_thang,1)})
+                ten = str(row.iloc[1]).strip()
+                sl_may = int(float(str(row.iloc[2])))
+                sl_nguoi = int(float(str(row.iloc[3])))
+                nang_suat_m2_gio = float(str(row.iloc[4]))
+                ca = int(float(str(row.iloc[5])))
+                gio_ca = int(float(str(row.iloc[6])))
+                hs = float(str(row.iloc[7])) / 100
+                # Capacity = máy × năng_suất × ca × giờ/ca × 26 ngày × hiệu_suất
+                cap_thang = sl_may * nang_suat_m2_gio * ca * gio_ca * 26 * hs
+                machine_caps[ten] = round(cap_thang)
+                out["may_moc"].append({
+                    "ma": ma, "ten": ten, "sl": sl_may, "sl_nguoi": sl_nguoi,
+                    "nang_suat_m2_gio": nang_suat_m2_gio,
+                    "ca": ca, "gio_ca": gio_ca, "hs_pct": round(hs * 100),
+                    "cap_m2_thang": round(cap_thang),
+                })
+            except Exception:
+                continue
+    
+    # ── Sheet 2: Nhân lực ─────────────────────────────────────────────────
+    # Cols: Tổ(0), Công đoạn(1), Nhân lực(2), Năng suất m2/người/giờ(3),
+    #       Ca/ngày(4), Giờ/ca(5), Hiệu suất%(6), Giờ KD/tháng(7)
     sn_nl = next((s for s in xl_sx.sheet_names if "nhân" in s.lower() or "nhan" in s.lower()), None)
     if sn_nl:
         df = xl_sx.parse(sn_nl, header=None)
         for _, row in df.iloc[2:].iterrows():
+            if len(row) < 7: continue
             to = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
             if not to or to == "nan": continue
             try:
-                cong_doan=str(row.iloc[1]).strip()
-                nv=int(float(str(row.iloc[2]))); ca=int(float(str(row.iloc[3])))
-                gio_ca=int(float(str(row.iloc[4]))); hs=float(str(row.iloc[5]))/100
-                gio_thang = nv * 26 * gio_ca * hs
-            except Exception: continue
-            out["nhan_luc"].append({"to":to,"cong_doan":cong_doan,"nv":nv,"ca":ca,
-                                    "gio_ca":gio_ca,"hs_pct":round(hs*100),"gio_thang":round(gio_thang,1)})
-    n = min(len(out["cong_doan"]), len(out["nhan_luc"]))
+                cong_doan = str(row.iloc[1]).strip()
+                nv = int(float(str(row.iloc[2])))
+                nang_suat_val = str(row.iloc[3]).strip().lower()
+                ca = int(float(str(row.iloc[4])))
+                gio_ca = int(float(str(row.iloc[5])))
+                hs = float(str(row.iloc[6])) / 100
+                
+                # Xử lý năng suất: nếu text "tính theo máy" → lấy từ machine_caps
+                if "tính theo" in nang_suat_val or "máy" in nang_suat_val:
+                    # Tìm máy tương ứng theo tên (cố gắng match keyword)
+                    matched_machine = None
+                    for machine_name in machine_caps:
+                        if any(kw in machine_name.lower() for kw in ["ghép", "cắt", "cnc", "phay", "dập"]):
+                            if any(kw in to.lower() for kw in ["ghép", "cắt", "cnc", "phay", "dập"]):
+                                matched_machine = machine_name
+                                break
+                    cap_thang = machine_caps.get(matched_machine, 0) if matched_machine else 0
+                    nang_suat_m2_gio = None  # không có năng suất riêng
+                else:
+                    nang_suat_m2_gio = float(nang_suat_val)
+                    cap_thang = nv * nang_suat_m2_gio * ca * gio_ca * 26 * hs
+                
+                out["nhan_luc"].append({
+                    "to": to, "cong_doan": cong_doan, "nv": nv,
+                    "nang_suat_m2_gio": nang_suat_m2_gio,
+                    "ca": ca, "gio_ca": gio_ca, "hs_pct": round(hs * 100),
+                    "cap_m2_thang": round(cap_thang),
+                })
+            except Exception:
+                continue
+    
+    # ── Tính stage_caps & bottleneck ──────────────────────────────────────
+    # Mỗi nhân lực = 1 công đoạn
     stage_caps = []
-    for i in range(n):
-        cd = out["cong_doan"][i]; nl = out["nhan_luc"][i]
-        if cd["gio_m2"] > 0:
-            cap = nl["gio_thang"] / cd["gio_m2"]
-            stage_caps.append({"cong_doan":cd["ten"],"to":nl["to"],"nv":nl["nv"],
-                                "gio_kd":nl["gio_thang"],"gio_m2":cd["gio_m2"],
-                                "cap_m2_thang":round(cap),"cap_m2_tuan":round(cap/4.33)})
+    for nl in out["nhan_luc"]:
+        stage_caps.append({
+            "cong_doan": nl["cong_doan"],
+            "to": nl["to"],
+            "nv": nl["nv"],
+            "cap_m2_thang": nl["cap_m2_thang"],
+            "cap_m2_tuan": round(nl["cap_m2_thang"] / 4.33),
+        })
+    
     if stage_caps:
         _min_cap = min(s["cap_m2_thang"] for s in stage_caps)
         _bns = [s["cong_doan"] for s in stage_caps if s["cap_m2_thang"] == _min_cap]
-        out["cap_monthly"]  = _min_cap
-        out["cap_weekly"]   = round(_min_cap / 4.33)
-        out["bottleneck"]   = _bns[0]
-        out["bottlenecks"]  = _bns
-        out["stage_caps"]   = stage_caps
+        out["cap_monthly"] = _min_cap
+        out["cap_weekly"] = round(_min_cap / 4.33)
+        out["bottleneck"] = _bns[0]
+        out["bottlenecks"] = _bns
+        out["stage_caps"] = stage_caps
+    
     return out
 
 st.set_page_config(page_title="Kế Hoạch SX – QDP", layout="wide", page_icon="🏭")
@@ -2144,31 +2187,31 @@ with tab_plan:
                         df_summary.to_excel(
                             _writer, sheet_name="Tổng hợp tháng", index=False
                         )
-                        # Sheet 5-7: Năng lực SX (nếu đã tải file SX)
+                        # Sheet 5-6: Năng lực SX (nếu đã tải file SX)
                         _sx = st.session_state.get("sx_data")
                         if _sx:
-                            if _sx["cong_doan"]:
-                                pd.DataFrame(_sx["cong_doan"]).rename(columns={
-                                    "ma": "Mã CĐ", "ten": "Tên công đoạn",
-                                    "gio_m2": "Giờ-công/m²", "ghi_chu": "Ghi chú"
-                                }).to_excel(_writer, sheet_name="Công đoạn", index=False)
                             if _sx["may_moc"]:
                                 pd.DataFrame(_sx["may_moc"]).rename(columns={
-                                    "ma": "Mã máy", "ten": "Tên máy", "cong_doan": "Công đoạn",
-                                    "sl": "SL", "ca": "Ca/ngày", "gio_ca": "Giờ/ca",
-                                    "hs_pct": "Hiệu suất%", "gio_thang": "Giờ KD/tháng"
+                                    "ma": "Mã máy", "ten": "Tên máy", "sl": "SL máy",
+                                    "sl_nguoi": "NV/máy", "nang_suat_m2_gio": "NS m²/máy/giờ",
+                                    "ca": "Ca/ngày", "gio_ca": "Giờ/ca",
+                                    "hs_pct": "Hiệu suất%", "cap_m2_thang": "Năng suất (m²/tháng)"
                                 }).to_excel(_writer, sheet_name="Máy móc TB", index=False)
                             if _sx["nhan_luc"]:
-                                pd.DataFrame(_sx["nhan_luc"]).rename(columns={
+                                _df_nl_export = pd.DataFrame(_sx["nhan_luc"])
+                                _df_nl_export["nang_suat_m2_gio"] = _df_nl_export["nang_suat_m2_gio"].apply(
+                                    lambda x: x if x is not None else "theo máy"
+                                )
+                                _df_nl_export.rename(columns={
                                     "to": "Tổ", "cong_doan": "Công đoạn",
-                                    "nv": "Tổng NV", "ca": "Ca/ngày", "gio_ca": "Giờ/ca",
-                                    "hs_pct": "Hiệu suất%", "gio_thang": "Giờ KD/tháng"
+                                    "nv": "Số NV", "nang_suat_m2_gio": "NS m²/người/giờ",
+                                    "ca": "Ca/ngày", "gio_ca": "Giờ/ca",
+                                    "hs_pct": "Hiệu suất%", "cap_m2_thang": "Năng suất (m²/tháng)"
                                 }).to_excel(_writer, sheet_name="Nhân lực", index=False)
                             if _sx["stage_caps"]:
                                 pd.DataFrame(_sx["stage_caps"]).rename(columns={
                                     "cong_doan": "Công đoạn", "to": "Tổ SX",
-                                    "nv": "Số NV", "gio_kd": "Giờ KD/tháng",
-                                    "gio_m2": "Giờ/m²", "cap_m2_thang": "Năng suất (m²/tháng)",
+                                    "nv": "Số NV", "cap_m2_thang": "Năng suất (m²/tháng)",
                                     "cap_m2_tuan": "Năng suất (m²/tuần)"
                                 }).to_excel(_writer, sheet_name="Năng lực CĐ", index=False)
 
@@ -2192,13 +2235,12 @@ with tab_nanluc:
     if _sx is None:
         st.info(
             "⬅️ Vui lòng **tải file SX input.xlsx** ở sidebar bên trái  \n"
-            "*(3 sheet: công đoạn · máy móc TB · nhân lực)*"
+            "*(2 sheet: máy móc TB · nhân lực)*"
         )
     else:
         # ── KPI row ───────────────────────────────────────────────────────────
         _total_nv  = sum(nl["nv"]  for nl in _sx["nhan_luc"])
         _total_may = sum(mm["sl"]  for mm in _sx["may_moc"])
-        _n_cd      = len(_sx["cong_doan"])
         _cap_m     = _sx["cap_monthly"] or 0
         _cap_w     = _sx["cap_weekly"]  or 0
         _bn        = _sx["bottleneck"]  or "—"
@@ -2237,15 +2279,13 @@ with tab_nanluc:
         st.divider()
 
         # ── Bảng năng suất từng công đoạn ────────────────────────────────────
-        st.subheader("📊 Năng suất theo công đoạn (Nhân lực)")
+        st.subheader("📊 Năng suất theo công đoạn")
         if _sx["stage_caps"]:
             _df_stage = pd.DataFrame(_sx["stage_caps"])
             _df_stage = _df_stage.rename(columns={
                 "cong_doan":    "Công đoạn",
                 "to":           "Tổ SX",
                 "nv":           "Số NV",
-                "gio_kd":       "Giờ KD/tháng",
-                "gio_m2":       "Giờ-công/m²",
                 "cap_m2_thang": "Năng suất (m²/tháng)",
                 "cap_m2_tuan":  "Năng suất (m²/tuần)",
             })
@@ -2263,8 +2303,6 @@ with tab_nanluc:
             st.dataframe(
                 _df_stage.style.apply(_style_stage, axis=1)
                     .format({
-                        "Giờ KD/tháng":       "{:,.1f}",
-                        "Giờ-công/m²":        "{:.4f}",
                         "Năng suất (m²/tháng)": "{:,}",
                         "Năng suất (m²/tuần)":  "{:,}",
                         "% so nút thắt":       "{:.1f}%",
@@ -2322,16 +2360,22 @@ with tab_nanluc:
             if _sx["nhan_luc"]:
                 _df_nl = pd.DataFrame(_sx["nhan_luc"]).rename(columns={
                     "to": "Tổ", "cong_doan": "Công đoạn",
-                    "nv": "Tổng NV", "ca": "Ca/ngày",
-                    "gio_ca": "Giờ/ca", "hs_pct": "Hiệu suất%",
-                    "gio_thang": "Giờ KD/tháng",
+                    "nv": "Số NV", "nang_suat_m2_gio": "NS m²/người/giờ",
+                    "ca": "Ca/ngày", "gio_ca": "Giờ/ca", "hs_pct": "Hiệu suất%",
+                    "cap_m2_thang": "Năng suất (m²/tháng)",
                 })
+                # Handle None values for nang_suat_m2_gio
+                _df_nl["NS m²/người/giờ"] = _df_nl["NS m²/người/giờ"].apply(
+                    lambda x: f"{x:.2f}" if x is not None else "theo máy"
+                )
                 st.dataframe(
-                    _df_nl.style.format({"Giờ KD/tháng": "{:,.1f}"}),
+                    _df_nl.style.format({
+                        "Năng suất (m²/tháng)": "{:,}",
+                    }),
                     use_container_width=True, hide_index=True,
                 )
-                _total_gio_nl = sum(nl["gio_thang"] for nl in _sx["nhan_luc"])
-                st.metric("Tổng giờ khả dụng/tháng (toàn NM)", f"{_total_gio_nl:,.0f} giờ")
+                _total_cap_nl = sum(nl["cap_m2_thang"] for nl in _sx["nhan_luc"])
+                st.metric("Tổng năng suất nhân lực/tháng", f"{_total_cap_nl:,} m²")
             else:
                 st.info("Chưa có dữ liệu nhân lực.")
 
@@ -2340,16 +2384,20 @@ with tab_nanluc:
             if _sx["may_moc"]:
                 _df_mm = pd.DataFrame(_sx["may_moc"]).rename(columns={
                     "ma": "Mã máy", "ten": "Tên máy",
-                    "cong_doan": "Công đoạn", "sl": "SL máy",
+                    "sl": "SL máy", "sl_nguoi": "NV/máy",
+                    "nang_suat_m2_gio": "NS m²/máy/giờ",
                     "ca": "Ca/ngày", "gio_ca": "Giờ/ca",
-                    "hs_pct": "Hiệu suất%", "gio_thang": "Giờ KD/tháng",
+                    "hs_pct": "Hiệu suất%", "cap_m2_thang": "Năng suất (m²/tháng)",
                 })
                 st.dataframe(
-                    _df_mm.style.format({"Giờ KD/tháng": "{:,.1f}"}),
+                    _df_mm.style.format({
+                        "NS m²/máy/giờ": "{:.2f}",
+                        "Năng suất (m²/tháng)": "{:,}",
+                    }),
                     use_container_width=True, hide_index=True,
                 )
-                _total_gio_mm = sum(mm["gio_thang"] for mm in _sx["may_moc"])
-                st.metric("Tổng giờ máy khả dụng/tháng", f"{_total_gio_mm:,.0f} giờ")
+                _total_cap_mm = sum(mm["cap_m2_thang"] for mm in _sx["may_moc"])
+                st.metric("Tổng năng suất máy móc/tháng", f"{_total_cap_mm:,} m²")
             else:
                 st.info("Chưa có dữ liệu máy móc.")
 
@@ -2379,10 +2427,19 @@ with tab_nanluc:
                 _wif_stages.append(sc); continue
             _to_name = _nl_orig["to"]
             _new_nv  = _wif_nv.get(_to_name, _nl_orig["nv"])
-            _new_gio  = _new_nv * _nl_orig["ca"] * _nl_orig["gio_ca"] * 26 * (_nl_orig["hs_pct"] / 100)
-            _new_cap  = round(_new_gio / sc["gio_m2"]) if sc["gio_m2"] > 0 else sc["cap_m2_thang"]
-            _wif_stages.append({**sc, "cap_m2_thang": _new_cap, "cap_m2_tuan": round(_new_cap / 4.33),
-                                 "nv": _new_nv})
+            
+            # Tính lại capacity với số NV mới
+            if _nl_orig["nang_suat_m2_gio"] is not None:
+                # Có năng suất riêng → tính trực tiếp
+                _new_cap = round(_new_nv * _nl_orig["nang_suat_m2_gio"] * 
+                                _nl_orig["ca"] * _nl_orig["gio_ca"] * 26 * 
+                                (_nl_orig["hs_pct"] / 100))
+            else:
+                # Theo máy → giữ nguyên
+                _new_cap = sc["cap_m2_thang"]
+            
+            _wif_stages.append({**sc, "cap_m2_thang": _new_cap, 
+                               "cap_m2_tuan": round(_new_cap / 4.33), "nv": _new_nv})
 
         _wif_min  = min(s["cap_m2_thang"] for s in _wif_stages)
         _wif_bns  = [s["cong_doan"] for s in _wif_stages if s["cap_m2_thang"] == _wif_min]
