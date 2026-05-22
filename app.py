@@ -2406,91 +2406,79 @@ with tab_nanluc:
         st.divider()
 
         # ── What-if Simulation ────────────────────────────────────────────────
-        st.subheader("🎛️ What-if: Điều chỉnh máy móc & nhân lực")
-        st.caption("Thay đổi số lượng máy hoặc số NV lắp ráp để xem năng suất thay đổi. Không ảnh hưởng dữ liệu gốc.")
+        st.subheader("🎛️ What-if: Điều chỉnh máy móc & nhân lực lắp ráp")
+        st.caption("Thay đổi số lượng máy hoặc số NV lắp ráp. Số công nhân vận hành máy tự động tính theo tỷ lệ NV/máy.")
 
-        # Build mapping: tổ → máy (by matching keywords)
-        _team_machine_map = {}
-        for mm in _sx["may_moc"]:
-            for nl in _sx["nhan_luc"]:
-                # Match by keyword in name
-                mm_keywords = [w for w in mm["ten"].lower().split() if len(w) > 3]
-                nl_keywords = [w for w in nl["to"].lower().split() if len(w) > 2]
-                if any(k in " ".join(nl_keywords) for k in mm_keywords):
-                    _team_machine_map[nl["to"]] = mm
-                    break
+        # Find assembly team (has direct productivity)
+        _assembly_team = next((nl for nl in _sx["nhan_luc"] if nl["nang_suat_m2_gio"] is not None), None)
         
-        # Input controls: machines for machine-based teams, NV for assembly
-        _wif_cols = st.columns(min(len(_sx["nhan_luc"]), 4))
+        # Input controls: all machines + assembly workers
+        _n_machines = len(_sx["may_moc"])
+        _n_inputs = _n_machines + (1 if _assembly_team else 0)
+        _wif_cols = st.columns(min(_n_inputs, 4))
+        
         _wif_machines = {}  # {machine_name: new_count}
         _wif_assembly_nv = None
         
-        for _idx, _nl in enumerate(_sx["nhan_luc"]):
-            with _wif_cols[_idx % len(_wif_cols)]:
-                if _nl["to"] in _team_machine_map:
-                    # Machine-based team → adjust machine count
-                    _mm = _team_machine_map[_nl["to"]]
-                    _new_machine_count = st.number_input(
-                        f"Máy – {_mm['ten']}",
-                        value=_mm["sl"], min_value=1, max_value=100, step=1,
-                        key=f"wif_m_{_idx}",
-                        help=f"Hiện có {_mm['sl']} máy · {_mm['sl_nguoi']} NV/máy"
-                    )
-                    _wif_machines[_mm["ten"]] = _new_machine_count
-                else:
-                    # Assembly team → adjust worker count directly
-                    _wif_assembly_nv = st.number_input(
-                        f"NV – {_nl['to']}",
-                        value=_nl["nv"], min_value=1, max_value=500, step=1,
-                        key=f"wif_nv_{_idx}",
-                        help=f"Năng suất: {_nl['nang_suat_m2_gio']} m²/người/giờ"
-                    )
+        _col_idx = 0
+        # Show all machines
+        for mm in _sx["may_moc"]:
+            with _wif_cols[_col_idx % len(_wif_cols)]:
+                _new_count = st.number_input(
+                    f"Máy – {mm['ten']}",
+                    value=mm["sl"], min_value=1, max_value=100, step=1,
+                    key=f"wif_m_{mm['ma']}",
+                    help=f"Hiện có {mm['sl']} máy · {mm['sl_nguoi']} NV/máy · {mm['nang_suat_m2_gio']} m²/giờ/máy"
+                )
+                _wif_machines[mm["ma"]] = _new_count
+                _col_idx += 1
         
-        # Recalculate capacity with new settings
+        # Show assembly workers
+        if _assembly_team:
+            with _wif_cols[_col_idx % len(_wif_cols)]:
+                _wif_assembly_nv = st.number_input(
+                    f"NV – {_assembly_team['to']}",
+                    value=_assembly_team["nv"], min_value=1, max_value=500, step=1,
+                    key=f"wif_nv_lap",
+                    help=f"Năng suất: {_assembly_team['nang_suat_m2_gio']} m²/người/giờ"
+                )
+        
+        # Recalculate capacity for each stage
         _wif_stages = []
-        for i, sc in enumerate(_sx["stage_caps"]):
-            _nl_orig = _sx["nhan_luc"][i] if i < len(_sx["nhan_luc"]) else None
-            if _nl_orig is None:
-                _wif_stages.append(sc)
-                continue
+        
+        # 1. Calculate capacity for each machine type (these become stages)
+        for mm in _sx["may_moc"]:
+            _new_count = _wif_machines.get(mm["ma"], mm["sl"])
+            _new_cap = round(_new_count * mm["nang_suat_m2_gio"] * 
+                            mm["ca"] * mm["gio_ca"] * 26 * (mm["hs_pct"] / 100))
+            _new_operators = _new_count * mm["sl_nguoi"]
             
-            if _nl_orig["to"] in _team_machine_map:
-                # Machine-based: recalculate based on new machine count
-                _mm = _team_machine_map[_nl_orig["to"]]
-                _new_machine_count = _wif_machines.get(_mm["ten"], _mm["sl"])
-                # Find original machine data to get productivity
-                _mm_orig = next((m for m in _sx["may_moc"] if m["ten"] == _mm["ten"]), None)
-                if _mm_orig:
-                    _new_cap = round(_new_machine_count * _mm_orig["nang_suat_m2_gio"] * 
-                                    _mm_orig["ca"] * _mm_orig["gio_ca"] * 26 * 
-                                    (_mm_orig["hs_pct"] / 100))
-                    _new_nv_required = _new_machine_count * _mm_orig["sl_nguoi"]
-                else:
-                    _new_cap = sc["cap_m2_thang"]
-                    _new_nv_required = _nl_orig["nv"]
-                
-                _wif_stages.append({
-                    **sc, 
-                    "cap_m2_thang": _new_cap,
-                    "cap_m2_tuan": round(_new_cap / 4.33),
-                    "nv": _new_nv_required,
-                    "may": _new_machine_count,
-                })
-            else:
-                # Assembly: recalculate based on new worker count
-                if _nl_orig["nang_suat_m2_gio"] is not None and _wif_assembly_nv is not None:
-                    _new_cap = round(_wif_assembly_nv * _nl_orig["nang_suat_m2_gio"] * 
-                                    _nl_orig["ca"] * _nl_orig["gio_ca"] * 26 * 
-                                    (_nl_orig["hs_pct"] / 100))
-                else:
-                    _new_cap = sc["cap_m2_thang"]
-                
-                _wif_stages.append({
-                    **sc,
-                    "cap_m2_thang": _new_cap,
-                    "cap_m2_tuan": round(_new_cap / 4.33),
-                    "nv": _wif_assembly_nv or _nl_orig["nv"],
-                })
+            # Find corresponding labor team name (for display)
+            _stage_name = mm["ten"]
+            _team_name = next((nl["to"] for nl in _sx["nhan_luc"] 
+                              if any(kw in nl["to"].lower() for kw in mm["ten"].lower().split())),
+                             f"Tổ {mm['ten']}")
+            
+            _wif_stages.append({
+                "cong_doan": _stage_name,
+                "to": _team_name,
+                "nv": _new_operators,
+                "cap_m2_thang": _new_cap,
+                "cap_m2_tuan": round(_new_cap / 4.33),
+            })
+        
+        # 2. Calculate capacity for assembly stage
+        if _assembly_team and _wif_assembly_nv:
+            _new_cap = round(_wif_assembly_nv * _assembly_team["nang_suat_m2_gio"] * 
+                            _assembly_team["ca"] * _assembly_team["gio_ca"] * 26 * 
+                            (_assembly_team["hs_pct"] / 100))
+            _wif_stages.append({
+                "cong_doan": _assembly_team["cong_doan"],
+                "to": _assembly_team["to"],
+                "nv": _wif_assembly_nv,
+                "cap_m2_thang": _new_cap,
+                "cap_m2_tuan": round(_new_cap / 4.33),
+            })
         
         _wif_min  = min(s["cap_m2_thang"] for s in _wif_stages)
         _wif_bns  = [s["cong_doan"] for s in _wif_stages if s["cap_m2_thang"] == _wif_min]
@@ -2506,10 +2494,11 @@ with tab_nanluc:
         _wif_fig = go.Figure()
         _cd_names = [s["cong_doan"] for s in _sx["stage_caps"]]
         _orig_caps = [s["cap_m2_thang"] for s in _sx["stage_caps"]]
+        _wif_cd_names = [s["cong_doan"] for s in _wif_stages]
         _new_caps  = [s["cap_m2_thang"] for s in _wif_stages]
         _wif_fig.add_trace(go.Bar(x=_cd_names, y=_orig_caps, name="Gốc",
                                   marker_color="#a29bfe", opacity=0.7))
-        _wif_fig.add_trace(go.Bar(x=_cd_names, y=_new_caps, name="What-if",
+        _wif_fig.add_trace(go.Bar(x=_wif_cd_names, y=_new_caps, name="What-if",
                                   marker_color="#00b894", opacity=0.85))
         _wif_fig.add_hline(y=_wif_min, line_dash="dash", line_color="#e17055", line_width=2,
                            annotation_text=f"  Nút thắt mới: {_wif_min:,}",
