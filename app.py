@@ -2374,8 +2374,7 @@ with tab_nanluc:
                     }),
                     use_container_width=True, hide_index=True,
                 )
-                _total_cap_nl = sum(nl["cap_m2_thang"] for nl in _sx["nhan_luc"])
-                st.metric("Tổng năng suất nhân lực/tháng", f"{_total_cap_nl:,} m²")
+                # Note: Don't sum capacities - they're sequential stages, not additive
             else:
                 st.info("Chưa có dữ liệu nhân lực.")
 
@@ -2396,8 +2395,7 @@ with tab_nanluc:
                     }),
                     use_container_width=True, hide_index=True,
                 )
-                _total_cap_mm = sum(mm["cap_m2_thang"] for mm in _sx["may_moc"])
-                st.metric("Tổng năng suất máy móc/tháng", f"{_total_cap_mm:,} m²")
+                # Note: Don't sum capacities - machines work sequentially, not in parallel
             else:
                 st.info("Chưa có dữ liệu máy móc.")
 
@@ -2490,7 +2488,7 @@ with tab_nanluc:
         _wc2.metric("Nút thắt mới", " · ".join(_wif_bns))
         _wc3.metric("Tuần (ước tính)", f"{round(_wif_min/4.33):,} m²")
 
-        # Biểu đồ so sánh gốc vs what-if
+        # Biểu đồ so sánh: Hiện tại (green) vs What-if (blue)
         # Use what-if stage names as canonical (includes all machines)
         _wif_stage_names = [s["cong_doan"] for s in _wif_stages]
         _wif_caps = [s["cap_m2_thang"] for s in _wif_stages]
@@ -2504,44 +2502,55 @@ with tab_nanluc:
             _orig_caps_aligned.append(orig_match["cap_m2_thang"] if orig_match else 0)
         
         _wif_fig = go.Figure()
+        
+        # Add current capacity bars (GREEN FILLED)
         _wif_fig.add_trace(go.Bar(
-            x=_wif_stage_names, y=_orig_caps_aligned, 
-            name="Hiện tại",
-            marker_color="#74b9ff", 
-            opacity=0.75,
-            text=[f"{v:,}" for v in _orig_caps_aligned],
+            x=_wif_stage_names, 
+            y=_orig_caps_aligned, 
+            name="Năng suất hiện tại",
+            marker=dict(color="#00b894"),  # Green filled
+            text=[f"{v:,}" if v > 0 else "" for v in _orig_caps_aligned],
             textposition="outside",
             textfont=dict(size=9),
         ))
+        
+        # Add what-if capacity bars (BLUE FILLED)
         _wif_fig.add_trace(go.Bar(
-            x=_wif_stage_names, y=_wif_caps, 
-            name="What-if",
-            marker_color="#00b894", 
-            opacity=0.85,
+            x=_wif_stage_names, 
+            y=_wif_caps, 
+            name="Năng suất giả định",
+            marker=dict(color="#74b9ff"),  # Blue filled
             text=[f"{v:,}" for v in _wif_caps],
             textposition="outside",
             textfont=dict(size=9),
         ))
+        
+        # Add bottleneck line
         _wif_fig.add_hline(
             y=_wif_min, 
             line_dash="dash", 
-            line_color="#e17055", 
+            line_color="#e74c3c", 
             line_width=2,
             annotation_text=f"Nút thắt mới: {_wif_min:,} m²",
             annotation_position="right",
-            annotation_font=dict(color="#e17055", size=11),
+            annotation_font=dict(color="#e74c3c", size=11),
         )
+        
         _wif_fig.update_layout(
-            barmode="group", 
-            height=380,
+            barmode="group",  # Group bars side by side
+            height=400,
             showlegend=True,
             legend=dict(
+                title="",
                 orientation="h", 
                 yanchor="bottom", 
                 y=1.01, 
                 xanchor="left", 
                 x=0,
-                font=dict(size=11),
+                font=dict(size=12),
+                bgcolor="rgba(255, 255, 255, 0.8)",
+                bordercolor="#333",
+                borderwidth=1,
             ),
             xaxis=dict(
                 title="Công đoạn",
@@ -2552,7 +2561,7 @@ with tab_nanluc:
                 title="Năng suất (m²/tháng)",
                 tickfont=dict(size=10),
             ),
-            margin=dict(t=50, b=100, l=60, r=20),
+            margin=dict(t=60, b=100, l=60, r=20),
             plot_bgcolor="white", 
             paper_bgcolor="white", 
             font=dict(color="#333"),
