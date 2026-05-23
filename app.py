@@ -78,13 +78,15 @@ def parse_sx_input(xl_sx):
                 
                 # Xử lý năng suất: nếu text "tính theo máy" → lấy từ machine_caps
                 if "tính theo" in nang_suat_val or "máy" in nang_suat_val:
-                    # Tìm máy tương ứng theo tên (cố gắng match keyword)
+                    # Tìm máy tương ứng: SAME keyword must appear in both
                     matched_machine = None
-                    for machine_name in machine_caps:
-                        if any(kw in machine_name.lower() for kw in ["ghép", "cắt", "cnc", "phay", "dập"]):
-                            if any(kw in to.lower() for kw in ["ghép", "cắt", "cnc", "phay", "dập"]):
+                    for machine_name, cap in machine_caps.items():
+                        for kw in ["ghép", "cắt", "cnc", "phay", "dập"]:
+                            if kw in machine_name.lower() and kw in to.lower():
                                 matched_machine = machine_name
                                 break
+                        if matched_machine:
+                            break
                     cap_thang = machine_caps.get(matched_machine, 0) if matched_machine else 0
                     nang_suat_m2_gio = None  # không có năng suất riêng
                 else:
@@ -2449,13 +2451,14 @@ with tab_nanluc:
             _stage_name = orig_stage["cong_doan"]
             _orig_cap = orig_stage["cap_m2_thang"]
             
-            # Find corresponding machine (if any) to recalculate
+            # Find corresponding machine using SAME keyword matching
             matching_machine = None
             for mm in _sx["may_moc"]:
-                # Match by keywords in stage name
-                if any(keyword in _stage_name.lower() 
-                       for keyword in mm["ten"].lower().split() if len(keyword) > 3):
-                    matching_machine = mm
+                for kw in ["ghép", "cắt", "cnc", "phay", "dập"]:
+                    if kw in mm["ten"].lower() and kw in _stage_name.lower():
+                        matching_machine = mm
+                        break
+                if matching_machine:
                     break
             
             if matching_machine:
@@ -2541,9 +2544,9 @@ with tab_nanluc:
                 y=1.01, 
                 xanchor="left", 
                 x=0,
-                font=dict(size=12),
-                bgcolor="rgba(255, 255, 255, 0.8)",
-                bordercolor="#333",
+                font=dict(size=12, color="#333"),  # Explicit text color
+                bgcolor="rgba(255, 255, 255, 0.9)",
+                bordercolor="#999",
                 borderwidth=1,
             ),
             xaxis=dict(
