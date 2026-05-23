@@ -2441,45 +2441,47 @@ with tab_nanluc:
                     help=f"Năng suất: {_assembly_team['nang_suat_m2_gio']} m²/người/giờ"
                 )
         
-        # Recalculate capacity for each stage
-        _wif_stages = []
+        # Recalculate capacity for each stage based on what-if inputs
+        _wif_stage_caps = []
         
-        # 1. Calculate capacity for each machine type (these become stages)
-        for mm in _sx["may_moc"]:
-            _new_count = _wif_machines.get(mm["ma"], mm["sl"])
-            _new_cap = round(_new_count * mm["nang_suat_m2_gio"] * 
-                            mm["ca"] * mm["gio_ca"] * 26 * (mm["hs_pct"] / 100))
-            _new_operators = _new_count * mm["sl_nguoi"]
+        # Process each original stage
+        for orig_stage in _sx["stage_caps"]:
+            _stage_name = orig_stage["cong_doan"]
+            _orig_cap = orig_stage["cap_m2_thang"]
             
-            # Find corresponding labor team name (for display)
-            _stage_name = mm["ten"]
-            _team_name = next((nl["to"] for nl in _sx["nhan_luc"] 
-                              if any(kw in nl["to"].lower() for kw in mm["ten"].lower().split())),
-                             f"Tổ {mm['ten']}")
+            # Find corresponding machine (if any) to recalculate
+            matching_machine = None
+            for mm in _sx["may_moc"]:
+                # Match by keywords in stage name
+                if any(keyword in _stage_name.lower() 
+                       for keyword in mm["ten"].lower().split() if len(keyword) > 3):
+                    matching_machine = mm
+                    break
             
-            _wif_stages.append({
+            if matching_machine:
+                # Machine-based stage: recalculate based on new machine count
+                _new_count = _wif_machines.get(matching_machine["ma"], matching_machine["sl"])
+                _new_cap = round(_new_count * matching_machine["nang_suat_m2_gio"] * 
+                                matching_machine["ca"] * matching_machine["gio_ca"] * 26 * 
+                                (matching_machine["hs_pct"] / 100))
+            else:
+                # Assembly stage: recalculate based on new worker count
+                if _wif_assembly_nv and _assembly_team:
+                    _new_cap = round(_wif_assembly_nv * _assembly_team["nang_suat_m2_gio"] * 
+                                    _assembly_team["ca"] * _assembly_team["gio_ca"] * 26 * 
+                                    (_assembly_team["hs_pct"] / 100))
+                else:
+                    _new_cap = _orig_cap
+            
+            _wif_stage_caps.append({
                 "cong_doan": _stage_name,
-                "to": _team_name,
-                "nv": _new_operators,
-                "cap_m2_thang": _new_cap,
-                "cap_m2_tuan": round(_new_cap / 4.33),
+                "orig_cap": _orig_cap,
+                "wif_cap": _new_cap,
             })
         
-        # 2. Calculate capacity for assembly stage
-        if _assembly_team and _wif_assembly_nv:
-            _new_cap = round(_wif_assembly_nv * _assembly_team["nang_suat_m2_gio"] * 
-                            _assembly_team["ca"] * _assembly_team["gio_ca"] * 26 * 
-                            (_assembly_team["hs_pct"] / 100))
-            _wif_stages.append({
-                "cong_doan": _assembly_team["cong_doan"],
-                "to": _assembly_team["to"],
-                "nv": _wif_assembly_nv,
-                "cap_m2_thang": _new_cap,
-                "cap_m2_tuan": round(_new_cap / 4.33),
-            })
-        
-        _wif_min  = min(s["cap_m2_thang"] for s in _wif_stages)
-        _wif_bns  = [s["cong_doan"] for s in _wif_stages if s["cap_m2_thang"] == _wif_min]
+        # Calculate new bottleneck
+        _wif_min = min(s["wif_cap"] for s in _wif_stage_caps)
+        _wif_bns = [s["cong_doan"] for s in _wif_stage_caps if s["wif_cap"] == _wif_min]
         _delta_cap = _wif_min - _cap_m
 
         _wc1, _wc2, _wc3 = st.columns(3)
@@ -2488,39 +2490,31 @@ with tab_nanluc:
         _wc2.metric("Nút thắt mới", " · ".join(_wif_bns))
         _wc3.metric("Tuần (ước tính)", f"{round(_wif_min/4.33):,} m²")
 
-        # Biểu đồ so sánh: Hiện tại (green) vs What-if (blue)
-        # Use what-if stage names as canonical (includes all machines)
-        _wif_stage_names = [s["cong_doan"] for s in _wif_stages]
-        _wif_caps = [s["cap_m2_thang"] for s in _wif_stages]
-        
-        # Match original capacities to what-if stage names
-        _orig_caps_aligned = []
-        for wif_stage in _wif_stages:
-            # Find matching original stage by name
-            orig_match = next((s for s in _sx["stage_caps"] 
-                              if s["cong_doan"] == wif_stage["cong_doan"]), None)
-            _orig_caps_aligned.append(orig_match["cap_m2_thang"] if orig_match else 0)
+        # Chart: green (current) vs blue (what-if)
+        _stage_names = [s["cong_doan"] for s in _wif_stage_caps]
+        _orig_caps = [s["orig_cap"] for s in _wif_stage_caps]
+        _new_caps = [s["wif_cap"] for s in _wif_stage_caps]
         
         _wif_fig = go.Figure()
         
         # Add current capacity bars (GREEN FILLED)
         _wif_fig.add_trace(go.Bar(
-            x=_wif_stage_names, 
-            y=_orig_caps_aligned, 
+            x=_stage_names, 
+            y=_orig_caps, 
             name="Năng suất hiện tại",
             marker=dict(color="#00b894"),  # Green filled
-            text=[f"{v:,}" if v > 0 else "" for v in _orig_caps_aligned],
+            text=[f"{v:,}" for v in _orig_caps],
             textposition="outside",
             textfont=dict(size=9),
         ))
         
         # Add what-if capacity bars (BLUE FILLED)
         _wif_fig.add_trace(go.Bar(
-            x=_wif_stage_names, 
-            y=_wif_caps, 
+            x=_stage_names, 
+            y=_new_caps, 
             name="Năng suất giả định",
             marker=dict(color="#74b9ff"),  # Blue filled
-            text=[f"{v:,}" for v in _wif_caps],
+            text=[f"{v:,}" for v in _new_caps],
             textposition="outside",
             textfont=dict(size=9),
         ))
