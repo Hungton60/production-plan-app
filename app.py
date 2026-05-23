@@ -22,16 +22,17 @@ def parse_sx_input(xl_sx):
     """Parse new SX input format with 2 sheets:
     - máy móc TB: direct m²/hour/machine productivity
     - nhân lực: direct m²/hour/person productivity
+    
+    For machine-based labor, OVERRIDE labor NV with calculated machine operators.
     """
     out = {"may_moc": [], "nhan_luc": [], "stage_caps": [],
            "cap_monthly": None, "cap_weekly": None,
            "bottleneck": None, "bottlenecks": []}
     
     # ── Sheet 1: Máy móc TB ───────────────────────────────────────────────
-    # Cols: Mã máy(0), Tên máy(1), Số lượng máy(2), Số người/máy(3),
-    #       Năng suất m2/giờ/máy(4), Ca/ngày(5), Giờ/ca(6), Hiệu suất%(7)
     sn_mm = next((s for s in xl_sx.sheet_names if "máy" in s.lower() or "may" in s.lower()), None)
-    machine_caps = {}  # {tên_máy: capacity_m2_month}
+    machines_by_code = {}  # {machine_code: machine_data}
+    
     if sn_mm:
         df = xl_sx.parse(sn_mm, header=None)
         for _, row in df.iloc[2:].iterrows():
@@ -46,21 +47,24 @@ def parse_sx_input(xl_sx):
                 ca = int(float(str(row.iloc[5])))
                 gio_ca = int(float(str(row.iloc[6])))
                 hs = float(str(row.iloc[7])) / 100
+                
                 # Capacity = máy × năng_suất × ca × giờ/ca × 26 ngày × hiệu_suất
                 cap_thang = sl_may * nang_suat_m2_gio * ca * gio_ca * 26 * hs
-                machine_caps[ten] = round(cap_thang)
-                out["may_moc"].append({
+                nv_total = sl_may * sl_nguoi  # CALCULATED operator count
+                
+                machine_data = {
                     "ma": ma, "ten": ten, "sl": sl_may, "sl_nguoi": sl_nguoi,
                     "nang_suat_m2_gio": nang_suat_m2_gio,
                     "ca": ca, "gio_ca": gio_ca, "hs_pct": round(hs * 100),
                     "cap_m2_thang": round(cap_thang),
-                })
+                    "nv_total": nv_total,  # Add total operator count
+                }
+                out["may_moc"].append(machine_data)
+                machines_by_code[ma] = machine_data
             except Exception:
                 continue
     
     # ── Sheet 2: Nhân lực ─────────────────────────────────────────────────
-    # Cols: Tổ(0), Công đoạn(1), Nhân lực(2), Năng suất m2/người/giờ(3),
-    #       Ca/ngày(4), Giờ/ca(5), Hiệu suất%(6), Giờ KD/tháng(7)
     sn_nl = next((s for s in xl_sx.sheet_names if "nhân" in s.lower() or "nhan" in s.lower()), None)
     if sn_nl:
         df = xl_sx.parse(sn_nl, header=None)
@@ -70,67 +74,61 @@ def parse_sx_input(xl_sx):
             if not to or to == "nan": continue
             try:
                 cong_doan = str(row.iloc[1]).strip()
-                nv = int(float(str(row.iloc[2])))
+                nv_input = int(float(str(row.iloc[2])))  # Input NV (may be wrong)
                 nang_suat_val = str(row.iloc[3]).strip().lower()
                 ca = int(float(str(row.iloc[4])))
                 gio_ca = int(float(str(row.iloc[5])))
                 hs = float(str(row.iloc[6])) / 100
                 
-                # Xử lý năng suất: nếu text "tính theo máy" → lấy từ machine_caps
+                # Find matching machine by team name keywords
+                matched_code = None
                 if "tính theo" in nang_suat_val or "máy" in nang_suat_val:
-                    # Tìm máy tương ứng: SAME keyword must appear in both
-                    matched_machine = None
-                    for machine_name, cap in machine_caps.items():
-                        for kw in ["ghép", "cắt", "cnc", "phay", "dập"]:
-                            if kw in machine_name.lower() and kw in to.lower():
-                                matched_machine = machine_name
-                                break
-                        if matched_machine:
+                    # Try matching by specific keywords with precedence
+                    # Priority: dập > ghép > cnc/phay > cắt (to avoid mis-match)
+                    for kw in ["dập", "ghép", "cnc", "phay", "cắt"]:
+                        if kw in to.lower():
+                            for ma, mm in machines_by_code.items():
+                                if kw in mm["ten"].lower():
+                                    # Extra check: avoid "cắt" matching "dập, cắt"
+                                    if kw == "cắt" and "dập" in mm["ten"].lower():
+                                        continue
+                                    matched_code = ma
+                                    break
+                        if matched_code:
                             break
-                    cap_thang = machine_caps.get(matched_machine, 0) if matched_machine else 0
-                    nang_suat_m2_gio = None  # không có năng suất riêng
+                
+                if matched_code:
+                    # Machine-based: use machine capacity and CALCULATED NV
+                    machine = machines_by_code[matched_code]
+                    cap_thang = machine["cap_m2_thang"]
+                    nv = machine["nv_total"]  # OVERRIDE with calculated NV
+                    nang_suat_m2_gio = None
                 else:
+                    # Assembly: use direct productivity
                     nang_suat_m2_gio = float(nang_suat_val)
-                    cap_thang = nv * nang_suat_m2_gio * ca * gio_ca * 26 * hs
+                    cap_thang = nv_input * nang_suat_m2_gio * ca * gio_ca * 26 * hs
+                    nv = nv_input  # Use input NV for assembly
                 
                 out["nhan_luc"].append({
                     "to": to, "cong_doan": cong_doan, "nv": nv,
                     "nang_suat_m2_gio": nang_suat_m2_gio,
                     "ca": ca, "gio_ca": gio_ca, "hs_pct": round(hs * 100),
                     "cap_m2_thang": round(cap_thang),
+                    "machine_code": matched_code,  # Store for what-if matching
                 })
             except Exception:
                 continue
     
     # ── Tính stage_caps & bottleneck ──────────────────────────────────────
-    # Build mapping: machine code → machine data for precise matching
-    machine_by_code = {mm["ma"]: mm for mm in out["may_moc"]}
-    
-    # Mỗi nhân lực = 1 công đoạn
     stage_caps = []
     for nl in out["nhan_luc"]:
-        # Find machine code for this labor team (if machine-based)
-        machine_code = None
-        if nl["nang_suat_m2_gio"] is None:  # Machine-based (not direct productivity)
-            # Try to find matching machine by keyword
-            for mm in out["may_moc"]:
-                for kw in ["ghép", "cắt", "cnc", "phay", "dập"]:
-                    if kw in mm["ten"].lower() and kw in nl["to"].lower():
-                        # Additional check: avoid "cắt" matching "dập, cắt ngàm"
-                        if kw == "cắt" and "dập" in mm["ten"].lower():
-                            continue  # Skip this match, look for "dập" instead
-                        machine_code = mm["ma"]
-                        break
-                if machine_code:
-                    break
-        
         stage_caps.append({
             "cong_doan": nl["cong_doan"],
             "to": nl["to"],
             "nv": nl["nv"],
             "cap_m2_thang": nl["cap_m2_thang"],
             "cap_m2_tuan": round(nl["cap_m2_thang"] / 4.33),
-            "machine_code": machine_code,  # Add machine code for what-if matching
+            "machine_code": nl.get("machine_code"),
         })
     
     if stage_caps:
