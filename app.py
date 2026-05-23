@@ -2491,25 +2491,74 @@ with tab_nanluc:
         _wc3.metric("Tuần (ước tính)", f"{round(_wif_min/4.33):,} m²")
 
         # Biểu đồ so sánh gốc vs what-if
+        # Use what-if stage names as canonical (includes all machines)
+        _wif_stage_names = [s["cong_doan"] for s in _wif_stages]
+        _wif_caps = [s["cap_m2_thang"] for s in _wif_stages]
+        
+        # Match original capacities to what-if stage names
+        _orig_caps_aligned = []
+        for wif_stage in _wif_stages:
+            # Find matching original stage by name
+            orig_match = next((s for s in _sx["stage_caps"] 
+                              if s["cong_doan"] == wif_stage["cong_doan"]), None)
+            _orig_caps_aligned.append(orig_match["cap_m2_thang"] if orig_match else 0)
+        
         _wif_fig = go.Figure()
-        _cd_names = [s["cong_doan"] for s in _sx["stage_caps"]]
-        _orig_caps = [s["cap_m2_thang"] for s in _sx["stage_caps"]]
-        _wif_cd_names = [s["cong_doan"] for s in _wif_stages]
-        _new_caps  = [s["cap_m2_thang"] for s in _wif_stages]
-        _wif_fig.add_trace(go.Bar(x=_cd_names, y=_orig_caps, name="Gốc",
-                                  marker_color="#a29bfe", opacity=0.7))
-        _wif_fig.add_trace(go.Bar(x=_wif_cd_names, y=_new_caps, name="What-if",
-                                  marker_color="#00b894", opacity=0.85))
-        _wif_fig.add_hline(y=_wif_min, line_dash="dash", line_color="#e17055", line_width=2,
-                           annotation_text=f"  Nút thắt mới: {_wif_min:,}",
-                           annotation_font_color="#e17055")
-        _wif_fig.update_layout(
-            barmode="group", height=350,
-            legend=dict(orientation="h", y=1.02, x=0),
-            xaxis_title="Công đoạn", yaxis_title="Năng suất (m²/tháng)",
-            margin=dict(t=40, b=60, r=200),
-            plot_bgcolor="white", paper_bgcolor="white", font=dict(color="#333"),
+        _wif_fig.add_trace(go.Bar(
+            x=_wif_stage_names, y=_orig_caps_aligned, 
+            name="Hiện tại",
+            marker_color="#74b9ff", 
+            opacity=0.75,
+            text=[f"{v:,}" for v in _orig_caps_aligned],
+            textposition="outside",
+            textfont=dict(size=9),
+        ))
+        _wif_fig.add_trace(go.Bar(
+            x=_wif_stage_names, y=_wif_caps, 
+            name="What-if",
+            marker_color="#00b894", 
+            opacity=0.85,
+            text=[f"{v:,}" for v in _wif_caps],
+            textposition="outside",
+            textfont=dict(size=9),
+        ))
+        _wif_fig.add_hline(
+            y=_wif_min, 
+            line_dash="dash", 
+            line_color="#e17055", 
+            line_width=2,
+            annotation_text=f"Nút thắt mới: {_wif_min:,} m²",
+            annotation_position="right",
+            annotation_font=dict(color="#e17055", size=11),
         )
+        _wif_fig.update_layout(
+            barmode="group", 
+            height=380,
+            showlegend=True,
+            legend=dict(
+                orientation="h", 
+                yanchor="bottom", 
+                y=1.01, 
+                xanchor="left", 
+                x=0,
+                font=dict(size=11),
+            ),
+            xaxis=dict(
+                title="Công đoạn",
+                tickangle=-45,
+                tickfont=dict(size=10),
+            ),
+            yaxis=dict(
+                title="Năng suất (m²/tháng)",
+                tickfont=dict(size=10),
+            ),
+            margin=dict(t=50, b=100, l=60, r=20),
+            plot_bgcolor="white", 
+            paper_bgcolor="white", 
+            font=dict(color="#333"),
+        )
+        _wif_fig.update_xaxes(showgrid=False)
+        _wif_fig.update_yaxes(showgrid=True, gridcolor="#e0e0e0", gridwidth=1)
         st.plotly_chart(_wif_fig, use_container_width=True)
 
         # ── Phân tích tải trọng theo dự án (nếu đã có file dự án) ─────────────
