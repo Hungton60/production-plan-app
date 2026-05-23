@@ -103,15 +103,34 @@ def parse_sx_input(xl_sx):
                 continue
     
     # ── Tính stage_caps & bottleneck ──────────────────────────────────────
+    # Build mapping: machine code → machine data for precise matching
+    machine_by_code = {mm["ma"]: mm for mm in out["may_moc"]}
+    
     # Mỗi nhân lực = 1 công đoạn
     stage_caps = []
     for nl in out["nhan_luc"]:
+        # Find machine code for this labor team (if machine-based)
+        machine_code = None
+        if nl["nang_suat_m2_gio"] is None:  # Machine-based (not direct productivity)
+            # Try to find matching machine by keyword
+            for mm in out["may_moc"]:
+                for kw in ["ghép", "cắt", "cnc", "phay", "dập"]:
+                    if kw in mm["ten"].lower() and kw in nl["to"].lower():
+                        # Additional check: avoid "cắt" matching "dập, cắt ngàm"
+                        if kw == "cắt" and "dập" in mm["ten"].lower():
+                            continue  # Skip this match, look for "dập" instead
+                        machine_code = mm["ma"]
+                        break
+                if machine_code:
+                    break
+        
         stage_caps.append({
             "cong_doan": nl["cong_doan"],
             "to": nl["to"],
             "nv": nl["nv"],
             "cap_m2_thang": nl["cap_m2_thang"],
             "cap_m2_tuan": round(nl["cap_m2_thang"] / 4.33),
+            "machine_code": machine_code,  # Add machine code for what-if matching
         })
     
     if stage_caps:
@@ -2431,6 +2450,9 @@ with tab_nanluc:
                     help=f"Hiện có {mm['sl']} máy · {mm['sl_nguoi']} NV/máy · {mm['nang_suat_m2_gio']} m²/giờ/máy"
                 )
                 _wif_machines[mm["ma"]] = _new_count
+                # Show calculated operator count
+                _operators = _new_count * mm["sl_nguoi"]
+                st.caption(f"👷 {_operators} công nhân vận hành")
                 _col_idx += 1
         
         # Show assembly workers
@@ -2445,28 +2467,26 @@ with tab_nanluc:
         
         # Recalculate capacity for each stage based on what-if inputs
         _wif_stage_caps = []
+        _wif_operator_counts = {}  # Track operator counts for display
         
         # Process each original stage
         for orig_stage in _sx["stage_caps"]:
             _stage_name = orig_stage["cong_doan"]
             _orig_cap = orig_stage["cap_m2_thang"]
+            _machine_code = orig_stage.get("machine_code")  # Get machine code if exists
             
-            # Find corresponding machine using SAME keyword matching
-            matching_machine = None
-            for mm in _sx["may_moc"]:
-                for kw in ["ghép", "cắt", "cnc", "phay", "dập"]:
-                    if kw in mm["ten"].lower() and kw in _stage_name.lower():
-                        matching_machine = mm
-                        break
+            if _machine_code:
+                # Machine-based stage: use machine code for precise matching
+                matching_machine = next((mm for mm in _sx["may_moc"] if mm["ma"] == _machine_code), None)
                 if matching_machine:
-                    break
-            
-            if matching_machine:
-                # Machine-based stage: recalculate based on new machine count
-                _new_count = _wif_machines.get(matching_machine["ma"], matching_machine["sl"])
-                _new_cap = round(_new_count * matching_machine["nang_suat_m2_gio"] * 
-                                matching_machine["ca"] * matching_machine["gio_ca"] * 26 * 
-                                (matching_machine["hs_pct"] / 100))
+                    _new_count = _wif_machines.get(matching_machine["ma"], matching_machine["sl"])
+                    _new_cap = round(_new_count * matching_machine["nang_suat_m2_gio"] * 
+                                    matching_machine["ca"] * matching_machine["gio_ca"] * 26 * 
+                                    (matching_machine["hs_pct"] / 100))
+                    _new_operators = _new_count * matching_machine["sl_nguoi"]
+                    _wif_operator_counts[_stage_name] = _new_operators
+                else:
+                    _new_cap = _orig_cap
             else:
                 # Assembly stage: recalculate based on new worker count
                 if _wif_assembly_nv and _assembly_team:
