@@ -81,20 +81,18 @@ def _safe_formula(val):
     return None
 
 def parse_sx_input(xl_sx):
-    """Parse new SX input format with 2 sheets:
+    """Parse SX input format with 2 sheets:
     - máy móc TB: direct m²/hour/machine productivity
-    - nhân lực: direct m²/hour/person productivity
-    
-    For machine-based labor, OVERRIDE labor NV with calculated machine operators.
+    - nhân lực: m²/hour/person (direct) or "tính theo năng suất máy"
     """
     out = {"may_moc": [], "nhan_luc": [], "stage_caps": [],
            "cap_monthly": None, "cap_weekly": None,
            "bottleneck": None, "bottlenecks": []}
-    
+
     # ── Sheet 1: Máy móc TB ───────────────────────────────────────────────
     sn_mm = next((s for s in xl_sx.sheet_names if "máy" in s.lower() or "may" in s.lower()), None)
-    machines_by_code = {}  # {machine_code: machine_data}
-    
+    machines_by_code = {}
+
     if sn_mm:
         df = xl_sx.parse(sn_mm, header=None)
         for _, row in df.iloc[2:].iterrows():
@@ -102,30 +100,27 @@ def parse_sx_input(xl_sx):
             ma = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
             if not ma or ma == "nan": continue
             try:
-                ten = str(row.iloc[1]).strip()
-                sl_may = int(float(str(row.iloc[2])))
-                sl_nguoi = int(float(str(row.iloc[3])))
-                nang_suat_m2_gio = float(str(row.iloc[4]))
-                ca = int(float(str(row.iloc[5])))
-                gio_ca = int(float(str(row.iloc[6])))
-                hs = float(str(row.iloc[7])) / 100
-                
-                # Capacity = máy × năng_suất × ca × giờ/ca × 26 ngày × hiệu_suất
-                cap_thang = sl_may * nang_suat_m2_gio * ca * gio_ca * 26 * hs
-                nv_total = sl_may * sl_nguoi  # CALCULATED operator count
-                
-                machine_data = {
+                ten          = str(row.iloc[1]).strip()
+                sl_may       = int(float(str(row.iloc[2])))
+                sl_nguoi     = float(str(row.iloc[3]))   # ← FLOAT (e.g. 5.5, 1.5)
+                ns_m2_gio    = float(str(row.iloc[4]))
+                ca           = int(float(str(row.iloc[5])))
+                gio_ca       = int(float(str(row.iloc[6])))
+                hs           = float(str(row.iloc[7])) / 100
+                cap_thang    = sl_may * ns_m2_gio * ca * gio_ca * 26 * hs
+                nv_total     = sl_may * sl_nguoi  # ← có thể là số thập phân
+
+                md = {
                     "ma": ma, "ten": ten, "sl": sl_may, "sl_nguoi": sl_nguoi,
-                    "nang_suat_m2_gio": nang_suat_m2_gio,
-                    "ca": ca, "gio_ca": gio_ca, "hs_pct": round(hs * 100),
-                    "cap_m2_thang": round(cap_thang),
-                    "nv_total": nv_total,  # Add total operator count
+                    "nang_suat_m2_gio": ns_m2_gio, "ca": ca, "gio_ca": gio_ca,
+                    "hs_pct": round(hs * 100), "cap_m2_thang": round(cap_thang),
+                    "nv_total": nv_total,
                 }
-                out["may_moc"].append(machine_data)
-                machines_by_code[ma] = machine_data
+                out["may_moc"].append(md)
+                machines_by_code[ma] = md
             except Exception:
                 continue
-    
+
     # ── Sheet 2: Nhân lực ─────────────────────────────────────────────────
     sn_nl = next((s for s in xl_sx.sheet_names if "nhân" in s.lower() or "nhan" in s.lower()), None)
     if sn_nl:
@@ -135,73 +130,70 @@ def parse_sx_input(xl_sx):
             to = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
             if not to or to == "nan": continue
             try:
-                cong_doan = str(row.iloc[1]).strip()
-                nv_input = int(float(str(row.iloc[2])))  # Input NV (may be wrong)
-                nang_suat_val = str(row.iloc[3]).strip().lower()
-                ca = int(float(str(row.iloc[4])))
-                gio_ca = int(float(str(row.iloc[5])))
-                hs = float(str(row.iloc[6])) / 100
-                
-                # Find matching machine by team name keywords
+                cong_doan    = str(row.iloc[1]).strip()
+                nv_input     = float(str(row.iloc[2]))
+                ns_val       = str(row.iloc[3]).strip().lower()
+                ca           = int(float(str(row.iloc[4])))
+                gio_ca       = int(float(str(row.iloc[5])))
+                hs           = float(str(row.iloc[6])) / 100
+
+                # Match với máy: dùng từ khóa ưu tiên "dập" > "ghép" > "cnc" > "phay" > "cắt"
                 matched_code = None
-                if "tính theo" in nang_suat_val or "máy" in nang_suat_val:
-                    # Try matching by specific keywords with precedence
-                    # Priority: dập > ghép > cnc/phay > cắt (to avoid mis-match)
+                if "tính theo" in ns_val or ns_val == "nan" or ns_val == "":
                     for kw in ["dập", "ghép", "cnc", "phay", "cắt"]:
                         if kw in to.lower():
                             for ma, mm in machines_by_code.items():
                                 if kw in mm["ten"].lower():
-                                    # Extra check: avoid "cắt" matching "dập, cắt"
                                     if kw == "cắt" and "dập" in mm["ten"].lower():
                                         continue
                                     matched_code = ma
                                     break
                         if matched_code:
                             break
-                
+
                 if matched_code:
-                    # Machine-based: use machine capacity and CALCULATED NV
-                    machine = machines_by_code[matched_code]
-                    cap_thang = machine["cap_m2_thang"]
-                    nv = machine["nv_total"]  # OVERRIDE with calculated NV
-                    nang_suat_m2_gio = None
+                    machine      = machines_by_code[matched_code]
+                    cap_thang    = machine["cap_m2_thang"]
+                    nv           = machine["nv_total"]
+                    ns_m2_gio    = None
                 else:
-                    # Assembly: use direct productivity
-                    nang_suat_m2_gio = float(nang_suat_val)
-                    cap_thang = nv_input * nang_suat_m2_gio * ca * gio_ca * 26 * hs
-                    nv = nv_input  # Use input NV for assembly
-                
+                    try:
+                        ns_m2_gio = float(ns_val)
+                    except ValueError:
+                        continue   # skip row nếu không parse được
+                    cap_thang = nv_input * ns_m2_gio * ca * gio_ca * 26 * hs
+                    nv        = nv_input
+
                 out["nhan_luc"].append({
                     "to": to, "cong_doan": cong_doan, "nv": nv,
-                    "nang_suat_m2_gio": nang_suat_m2_gio,
-                    "ca": ca, "gio_ca": gio_ca, "hs_pct": round(hs * 100),
-                    "cap_m2_thang": round(cap_thang),
-                    "machine_code": matched_code,  # Store for what-if matching
+                    "nang_suat_m2_gio": ns_m2_gio, "ca": ca, "gio_ca": gio_ca,
+                    "hs_pct": round(hs * 100), "cap_m2_thang": round(cap_thang),
+                    "machine_code": matched_code,
                 })
             except Exception:
                 continue
-    
-    # ── Tính stage_caps & bottleneck ──────────────────────────────────────
+
+    # ── Stage caps & bottleneck ───────────────────────────────────────────
     stage_caps = []
     for nl in out["nhan_luc"]:
         stage_caps.append({
-            "cong_doan": nl["cong_doan"],
-            "to": nl["to"],
-            "nv": nl["nv"],
+            "cong_doan":    nl["cong_doan"],
+            "to":           nl["to"],
+            "nv":           nl["nv"],
             "cap_m2_thang": nl["cap_m2_thang"],
-            "cap_m2_tuan": round(nl["cap_m2_thang"] / 4.33),
+            "cap_m2_tuan":  round(nl["cap_m2_thang"] / 4.33),
             "machine_code": nl.get("machine_code"),
         })
-    
+
     if stage_caps:
-        _min_cap = min(s["cap_m2_thang"] for s in stage_caps)
-        _bns = [s["cong_doan"] for s in stage_caps if s["cap_m2_thang"] == _min_cap]
-        out["cap_monthly"] = _min_cap
-        out["cap_weekly"] = round(_min_cap / 4.33)
-        out["bottleneck"] = _bns[0]
-        out["bottlenecks"] = _bns
-        out["stage_caps"] = stage_caps
-    
+        _min = min(s["cap_m2_thang"] for s in stage_caps)
+        _bns = [s["cong_doan"] for s in stage_caps if s["cap_m2_thang"] == _min]
+        out["cap_monthly"]  = _min
+        out["cap_weekly"]   = round(_min / 4.33)
+        out["bottleneck"]   = _bns[0]
+        out["bottlenecks"]  = _bns
+        out["stage_caps"]   = stage_caps
+
     return out
 
 st.set_page_config(page_title="Kế Hoạch SX – QDP", layout="wide", page_icon="🏭")
@@ -324,9 +316,9 @@ st.markdown("""
 # ── Tải file Năng Lực SX (đặt TRƯỚC các input để lấy giá trị default) ─────────
 st.sidebar.header("🔧 Năng Lực Sản Xuất")
 uploaded_sx = st.sidebar.file_uploader(
-    "📂 Tải file SX input.xlsx (công đoạn · máy móc · nhân lực)",
+    "📂 Tải file SX input.xlsx (máy móc · nhân lực)",
     type=["xlsx", "xls"], key="sx_file",
-    help="File gồm 3 sheet: 'công đoạn', 'máy móc TB', 'nhân lực'"
+    help="File gồm 2 sheet: 'máy móc TB', 'nhân lực'"
 )
 
 sx_data = None
@@ -2528,8 +2520,11 @@ with tab_nanluc:
         st.subheader("🎛️ What-if: Điều chỉnh máy móc & nhân lực lắp ráp")
         st.caption("Thay đổi số lượng máy hoặc số NV lắp ráp. Số công nhân vận hành máy tự động tính theo tỷ lệ NV/máy.")
 
-        # Find assembly team (has direct productivity)
-        _assembly_team = next((nl for nl in _sx["nhan_luc"] if nl["nang_suat_m2_gio"] is not None), None)
+        # Find assembly team = team có "lắp" trong tên (hoặc team cuối cùng có NS trực tiếp)
+        _assembly_team = next(
+            (nl for nl in _sx["nhan_luc"] if "lắp" in nl["to"].lower() and nl["nang_suat_m2_gio"] is not None),
+            next((nl for nl in reversed(_sx["nhan_luc"]) if nl["nang_suat_m2_gio"] is not None), None)
+        )
         
         # Input controls: all machines + assembly workers
         _n_machines = len(_sx["may_moc"])
@@ -2540,30 +2535,37 @@ with tab_nanluc:
         _wif_assembly_nv = None
         
         _col_idx = 0
-        # Show all machines
+        # Show all machines with operator count caption
         for mm in _sx["may_moc"]:
             with _wif_cols[_col_idx % len(_wif_cols)]:
                 _new_count = st.number_input(
                     f"Máy – {mm['ten']}",
                     value=mm["sl"], min_value=1, max_value=100, step=1,
                     key=f"wif_m_{mm['ma']}",
-                    help=f"Hiện có {mm['sl']} máy · {mm['sl_nguoi']} NV/máy · {mm['nang_suat_m2_gio']} m²/giờ/máy"
+                    help=f"{mm['sl_nguoi']} NV/máy · {mm['nang_suat_m2_gio']} m²/giờ/máy"
                 )
                 _wif_machines[mm["ma"]] = _new_count
-                # Show calculated operator count
-                _operators = _new_count * mm["sl_nguoi"]
-                st.caption(f"👷 {_operators} công nhân vận hành")
+                _ops = _new_count * mm["sl_nguoi"]
+                st.caption(f"👷 {_ops:.1f} CN vận hành")
                 _col_idx += 1
+
+        # Show sliders for ALL direct-productivity teams (not just lắp ráp)
+        _wif_direct_nv = {}   # {to_name: new_nv}
+        for _nl in _sx["nhan_luc"]:
+            if _nl["nang_suat_m2_gio"] is not None:   # direct productivity team
+                with _wif_cols[_col_idx % len(_wif_cols)]:
+                    _new_nv = st.number_input(
+                        f"NV – {_nl['to'].strip()}",
+                        value=int(_nl["nv"]), min_value=1, max_value=1000, step=1,
+                        key=f"wif_nv_{_nl['to']}",
+                        help=f"Năng suất: {_nl['nang_suat_m2_gio']} m²/người/giờ"
+                    )
+                    _wif_direct_nv[_nl["to"]] = _new_nv
+                    _col_idx += 1
         
-        # Show assembly workers
+        # Keep _wif_assembly_nv for backward compat
         if _assembly_team:
-            with _wif_cols[_col_idx % len(_wif_cols)]:
-                _wif_assembly_nv = st.number_input(
-                    f"NV – {_assembly_team['to']}",
-                    value=_assembly_team["nv"], min_value=1, max_value=500, step=1,
-                    key=f"wif_nv_lap",
-                    help=f"Năng suất: {_assembly_team['nang_suat_m2_gio']} m²/người/giờ"
-                )
+            _wif_assembly_nv = _wif_direct_nv.get(_assembly_team["to"], _assembly_team["nv"])
         
         # Recalculate capacity for each stage based on what-if inputs
         _wif_stage_caps = []
@@ -2588,11 +2590,14 @@ with tab_nanluc:
                 else:
                     _new_cap = _orig_cap
             else:
-                # Assembly stage: recalculate based on new worker count
-                if _wif_assembly_nv and _assembly_team:
-                    _new_cap = round(_wif_assembly_nv * _assembly_team["nang_suat_m2_gio"] * 
-                                    _assembly_team["ca"] * _assembly_team["gio_ca"] * 26 * 
-                                    (_assembly_team["hs_pct"] / 100))
+                # Direct productivity team: use new NV from slider
+                _nl_orig = next((nl for nl in _sx["nhan_luc"]
+                                 if nl["cong_doan"] == _stage_name), None)
+                if _nl_orig and _nl_orig["nang_suat_m2_gio"] is not None:
+                    _new_nv = _wif_direct_nv.get(_nl_orig["to"], int(_nl_orig["nv"]))
+                    _new_cap = round(_new_nv * _nl_orig["nang_suat_m2_gio"] *
+                                    _nl_orig["ca"] * _nl_orig["gio_ca"] * 26 *
+                                    (_nl_orig["hs_pct"] / 100))
                 else:
                     _new_cap = _orig_cap
             
