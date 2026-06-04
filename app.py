@@ -1211,50 +1211,17 @@ with tab_plan:
     # Planning Dashboard
     # ══════════════════════════════════════════════════════════════════════════════
     if True:
-        # Choose data source
-        data_source = st.radio(
-            "📂 Chọn nguồn dữ liệu:",
-            ["📁 Upload file Excel", "📊 Google Sheets"],
-            horizontal=True,
-            key="data_source_plan"
+        uploaded = st.file_uploader(
+            "📂 Tải lên file Excel (Dự án input · Tech input · Mặt bằng yêu cầu)",
+            type=["xlsx", "xls"], key="plan_file"
         )
-        
-        xl = None
-        
-        if data_source == "📁 Upload file Excel":
-            uploaded = st.file_uploader(
-                "Tải lên file Excel (Dự án input · Tech input · Mặt bằng yêu cầu)",
-                type=["xlsx", "xls"], key="plan_file"
-            )
-            
-            if uploaded is None:
-                st.info("⬅️ Vui lòng tải lên file Excel để bắt đầu.")
-            else:
-                xl = pd.ExcelFile(uploaded)
-                
-        else:  # Google Sheets
-            if not GSHEETS_AVAILABLE:
-                st.error("❌ Google Sheets integration chưa được cài đặt. Vui lòng dùng file upload.")
-            elif "gcp_service_account" not in st.secrets:
-                st.error("❌ Chưa cấu hình Google Sheets credentials. Vui lòng thêm vào Streamlit Secrets.")
-                st.info("Hướng dẫn: Settings → Secrets → Thêm gcp_service_account")
-            else:
-                sheet_id = st.text_input(
-                    "📝 Nhập Google Sheet ID:",
-                    value=st.secrets.get("sheet_id_du_an", ""),
-                    help="Lấy từ URL: https://docs.google.com/spreadsheets/d/[SHEET_ID]/edit",
-                    key="gsheet_id_plan"
-                )
-                
-                if sheet_id:
-                    with st.spinner("Đang đọc Google Sheet..."):
-                        xl = read_gsheet_as_excel(sheet_id)
-                    if xl:
-                        st.success(f"✅ Đã kết nối Google Sheet! Tìm thấy {len(xl.sheet_names)} sheets")
-                else:
-                    st.info("⬅️ Vui lòng nhập Sheet ID từ Google Sheets URL.")
-        
-        if xl is not None:
+
+        if uploaded is None:
+            st.info("⬅️ Vui lòng tải lên file chính để bắt đầu.")
+        else:
+            xl = pd.ExcelFile(uploaded)
+
+        if uploaded is not None:
             tech_weekly = parse_tech_input(xl)
             st.session_state["t1_tech_weekly"] = tech_weekly
             if "Dự án input" in xl.sheet_names:
@@ -1273,13 +1240,7 @@ with tab_plan:
                 if not projects:
                     st.error("Không parse được dự án nào. Kiểm tra lại file.")
                 else:
-                    # ── Session state: khởi tạo khi file thay đổi ────────────
-                    # Generate file_id based on source
-                    if data_source == "📁 Upload file Excel":
-                        file_id = f"{uploaded.name}_{uploaded.size}_{sheet}"
-                    else:
-                        file_id = f"gsheet_{sheet_id}_{sheet}"
-                    
+                    file_id = f"{uploaded.name}_{uploaded.size}_{sheet}"
                     if st.session_state.get("t1_file_id") != file_id:
                         orig_rows = [{
                             "name":  p["name"],
@@ -2402,6 +2363,12 @@ with tab_nanluc:
                 "cap_m2_thang": "Năng suất (m²/tháng)",
                 "cap_m2_tuan":  "Năng suất (m²/tuần)",
             })
+            # Format NV as rounded number, hide machine_code
+            _df_stage["Số NV"] = _df_stage["Số NV"].apply(
+                lambda x: round(x, 1) if x != int(x) else int(x)
+            )
+            _df_stage = _df_stage.drop(columns=["machine_code"], errors="ignore")
+
             _df_stage["% so nút thắt"] = (
                 _df_stage["Năng suất (m²/tháng)"] / _cap_m * 100
             ).round(1)
@@ -2410,15 +2377,15 @@ with tab_nanluc:
                 if row["Công đoạn"] in _bns_list:
                     return ["background-color:#fff0f0;color:#c0392b;font-weight:bold"] * len(row)
                 if row["% so nút thắt"] < 150:
-                    return ["background-color:#fff8e1;color:#333333"] * len(row)
-                return ["color:#333333"] * len(row)
+                    return ["background-color:#fff8e1;color:#555555"] * len(row)
+                return ["color:#dddddd"] * len(row)
 
             st.dataframe(
                 _df_stage.style.apply(_style_stage, axis=1)
                     .format({
                         "Năng suất (m²/tháng)": "{:,}",
                         "Năng suất (m²/tuần)":  "{:,}",
-                        "% so nút thắt":       "{:.1f}%",
+                        "% so nút thắt":        "{:.1f}%",
                     }),
                 use_container_width=True, hide_index=True,
             )
