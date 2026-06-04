@@ -2614,13 +2614,15 @@ with tab_nanluc:
 
         # Calculate new total NV
         _wif_total_nv = 0
+        # 1. Machine-based teams: new_count × NV/machine
         for mm in _sx["may_moc"]:
             _new_count = _wif_machines.get(mm["ma"], mm["sl"])
             _wif_total_nv += _new_count * mm["sl_nguoi"]
-        if _wif_assembly_nv:
-            _wif_total_nv += _wif_assembly_nv
-        elif _assembly_team:
-            _wif_total_nv += _assembly_team["nv"]
+        # 2. ALL direct-productivity teams (dập, lắp, etc.)
+        for _nl_d in _sx["nhan_luc"]:
+            if _nl_d["nang_suat_m2_gio"] is not None:
+                _new_nv_d = _wif_direct_nv.get(_nl_d["to"], int(_nl_d["nv"]))
+                _wif_total_nv += _new_nv_d
         _delta_nv = _wif_total_nv - _total_nv
 
         _wc1, _wc2, _wc3, _wc4 = st.columns(4)
