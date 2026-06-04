@@ -6,6 +6,68 @@ from datetime import datetime, date, timedelta
 import re
 import io
 
+# Google Sheets integration
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GSHEETS_AVAILABLE = True
+except ImportError:
+    GSHEETS_AVAILABLE = False
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GOOGLE SHEETS FUNCTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@st.cache_resource(ttl=300)  # Cache 5 minutes
+def get_gsheet_client():
+    """Initialize Google Sheets client from Streamlit secrets."""
+    if not GSHEETS_AVAILABLE:
+        return None
+    try:
+        credentials = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"],
+            scopes=[
+                "https://www.googleapis.com/auth/spreadsheets.readonly",
+                "https://www.googleapis.com/auth/drive.readonly",
+            ],
+        )
+        return gspread.authorize(credentials)
+    except Exception as e:
+        st.error(f"❌ Lỗi kết nối Google Sheets: {e}")
+        return None
+
+def read_gsheet_as_excel(sheet_id):
+    """Read Google Sheet and return as pandas ExcelFile-like object."""
+    try:
+        client = get_gsheet_client()
+        if client is None:
+            return None
+        
+        spreadsheet = client.open_by_key(sheet_id)
+        
+        # Create a mock ExcelFile object
+        class MockExcelFile:
+            def __init__(self, sheets_dict):
+                self.sheet_names = list(sheets_dict.keys())
+                self._sheets = sheets_dict
+            
+            def parse(self, sheet_name, header=None):
+                if sheet_name in self._sheets:
+                    return self._sheets[sheet_name]
+                raise ValueError(f"Sheet '{sheet_name}' not found")
+        
+        # Read all worksheets
+        sheets_dict = {}
+        for worksheet in spreadsheet.worksheets():
+            df = pd.DataFrame(worksheet.get_all_values())
+            sheets_dict[worksheet.title] = df
+        
+        return MockExcelFile(sheets_dict)
+        
+    except Exception as e:
+        st.error(f"❌ Lỗi đọc Google Sheet: {e}")
+        return None
+
 # ─── SX Input helpers (PHẢI định nghĩa trước st.set_page_config vì sidebar gọi sớm) ───
 def _safe_formula(val):
     if val is None: return None
@@ -1157,15 +1219,50 @@ with tab_plan:
     # Planning Dashboard
     # ══════════════════════════════════════════════════════════════════════════════
     if True:
-        uploaded = st.file_uploader(
-            "📂 Tải lên file Excel (Dự án input · Tech input · Mặt bằng yêu cầu)",
-            type=["xlsx", "xls"], key="plan_file"
+        # Choose data source
+        data_source = st.radio(
+            "📂 Chọn nguồn dữ liệu:",
+            ["📁 Upload file Excel", "📊 Google Sheets"],
+            horizontal=True,
+            key="data_source_plan"
         )
-
-        if uploaded is None:
-            st.info("⬅️ Vui lòng tải lên file chính để bắt đầu.")
-        else:
-            xl = pd.ExcelFile(uploaded)
+        
+        xl = None
+        
+        if data_source == "📁 Upload file Excel":
+            uploaded = st.file_uploader(
+                "Tải lên file Excel (Dự án input · Tech input · Mặt bằng yêu cầu)",
+                type=["xlsx", "xls"], key="plan_file"
+            )
+            
+            if uploaded is None:
+                st.info("⬅️ Vui lòng tải lên file Excel để bắt đầu.")
+            else:
+                xl = pd.ExcelFile(uploaded)
+                
+        else:  # Google Sheets
+            if not GSHEETS_AVAILABLE:
+                st.error("❌ Google Sheets integration chưa được cài đặt. Vui lòng dùng file upload.")
+            elif "gcp_service_account" not in st.secrets:
+                st.error("❌ Chưa cấu hình Google Sheets credentials. Vui lòng thêm vào Streamlit Secrets.")
+                st.info("Hướng dẫn: Settings → Secrets → Thêm gcp_service_account")
+            else:
+                sheet_id = st.text_input(
+                    "📝 Nhập Google Sheet ID:",
+                    value=st.secrets.get("sheet_id_du_an", ""),
+                    help="Lấy từ URL: https://docs.google.com/spreadsheets/d/[SHEET_ID]/edit",
+                    key="gsheet_id_plan"
+                )
+                
+                if sheet_id:
+                    with st.spinner("Đang đọc Google Sheet..."):
+                        xl = read_gsheet_as_excel(sheet_id)
+                    if xl:
+                        st.success(f"✅ Đã kết nối Google Sheet! Tìm thấy {len(xl.sheet_names)} sheets")
+                else:
+                    st.info("⬅️ Vui lòng nhập Sheet ID từ Google Sheets URL.")
+        
+        if xl is not None:
             tech_weekly = parse_tech_input(xl)
             st.session_state["t1_tech_weekly"] = tech_weekly
             if "Dự án input" in xl.sheet_names:
@@ -1185,7 +1282,12 @@ with tab_plan:
                     st.error("Không parse được dự án nào. Kiểm tra lại file.")
                 else:
                     # ── Session state: khởi tạo khi file thay đổi ────────────
-                    file_id = f"{uploaded.name}_{uploaded.size}_{sheet}"
+                    # Generate file_id based on source
+                    if data_source == "📁 Upload file Excel":
+                        file_id = f"{uploaded.name}_{uploaded.size}_{sheet}"
+                    else:
+                        file_id = f"gsheet_{sheet_id}_{sheet}"
+                    
                     if st.session_state.get("t1_file_id") != file_id:
                         orig_rows = [{
                             "name":  p["name"],
@@ -2505,11 +2607,24 @@ with tab_nanluc:
         _wif_bns = [s["cong_doan"] for s in _wif_stage_caps if s["wif_cap"] == _wif_min]
         _delta_cap = _wif_min - _cap_m
 
-        _wc1, _wc2, _wc3 = st.columns(3)
+        # Calculate new total NV
+        _wif_total_nv = 0
+        for mm in _sx["may_moc"]:
+            _new_count = _wif_machines.get(mm["ma"], mm["sl"])
+            _wif_total_nv += _new_count * mm["sl_nguoi"]
+        if _wif_assembly_nv:
+            _wif_total_nv += _wif_assembly_nv
+        elif _assembly_team:
+            _wif_total_nv += _assembly_team["nv"]
+        _delta_nv = _wif_total_nv - _total_nv
+
+        _wc1, _wc2, _wc3, _wc4 = st.columns(4)
         _wc1.metric("Năng suất mới (m²/tháng)", f"{_wif_min:,}",
                     delta=f"{_delta_cap:+,}", delta_color="normal")
         _wc2.metric("Nút thắt mới", " · ".join(_wif_bns))
         _wc3.metric("Tuần (ước tính)", f"{round(_wif_min/4.33):,} m²")
+        _wc4.metric("Tổng công nhân SX", f"{_wif_total_nv} người",
+                    delta=f"{_delta_nv:+} người", delta_color="normal")
 
         # Chart: green (current) vs blue (what-if)
         _stage_names = [s["cong_doan"] for s in _wif_stage_caps]
