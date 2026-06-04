@@ -1642,6 +1642,17 @@ with tab_plan:
                         })
                     df_summary = pd.DataFrame(summary_rows)
 
+                    # ── Lưu peak demand vào session state để dùng ở tab Năng Lực SX ──
+                    _monthly_totals_w = {ml: round(sum(load_data_w[ml].values())) for ml in month_labels}
+                    _peak_month_label = max(_monthly_totals_w, key=_monthly_totals_w.get) if _monthly_totals_w else None
+                    _peak_demand      = _monthly_totals_w.get(_peak_month_label, 0)
+                    _overload_months  = [ml for ml, v in _monthly_totals_w.items() if v > cap_monthly]
+                    st.session_state["khsx_peak_demand"]     = _peak_demand
+                    st.session_state["khsx_peak_month"]      = _peak_month_label
+                    st.session_state["khsx_overload_months"] = _overload_months
+                    st.session_state["khsx_monthly_totals"]  = _monthly_totals_w
+                    st.session_state["khsx_cap_monthly"]     = cap_monthly
+
                     # ── KPI cards ───────────────────────────────────────────────
                     n_overload = int((df_summary["% Sử dụng"] >= 100).sum())
                     n_tight    = int(((df_summary["% Sử dụng"] >= 90) & (df_summary["% Sử dụng"] < 100)).sum())
@@ -2312,6 +2323,40 @@ with tab_nanluc:
             "*(2 sheet: máy móc TB · nhân lực)*"
         )
     else:
+        # ── Cảnh báo KHSX vs Năng Lực ─────────────────────────────────────────
+        _peak   = st.session_state.get("khsx_peak_demand", 0)
+        _peak_m = st.session_state.get("khsx_peak_month", "")
+        _over   = st.session_state.get("khsx_overload_months", [])
+        _cap    = st.session_state.get("khsx_cap_monthly", cap_monthly)
+        _totals = st.session_state.get("khsx_monthly_totals", {})
+
+        if _peak > 0:
+            _pct = round(_peak / _cap * 100, 1) if _cap > 0 else 0
+            if len(_over) > 0:
+                st.error(
+                    f"🚨 **CẢNH BÁO: KHSX VƯỢT NĂNG LỰC SX!**  \n"
+                    f"📈 Đỉnh tải: **{_peak:,} m²/tháng** ({_peak_m}) = **{_pct}%** năng lực  \n"
+                    f"🔴 **{len(_over)} tháng quá tải:** {', '.join(_over)}  \n"
+                    f"⚠️ Cần tăng năng lực SX lên ít nhất **{_peak:,} m²/tháng** "
+                    f"(hiện tại: {_cap:,} m²/tháng — thiếu **{_peak - _cap:,} m²/tháng**)"
+                )
+            elif _pct >= 90:
+                st.warning(
+                    f"⚠️ **Lưu ý: KHSX gần chạm giới hạn năng lực!**  \n"
+                    f"📈 Đỉnh tải: **{_peak:,} m²/tháng** ({_peak_m}) = **{_pct}%** năng lực  \n"
+                    f"💡 Khuyến nghị tăng năng lực hoặc điều chỉnh KHSX để có buffer an toàn."
+                )
+            else:
+                st.success(
+                    f"✅ **Năng lực SX đáp ứng đủ KHSX hiện tại**  \n"
+                    f"📈 Đỉnh tải: **{_peak:,} m²/tháng** ({_peak_m}) = **{_pct}%** năng lực  \n"
+                    f"🟢 Còn dư: **{_cap - _peak:,} m²/tháng**"
+                )
+        else:
+            st.info("ℹ️ Chưa có dữ liệu KHSX. Vui lòng tải file kế hoạch ở tab **📊 Kế Hoạch Sản Xuất** trước.")
+
+        st.divider()
+
         # ── KPI row ───────────────────────────────────────────────────────────
         _total_nv  = sum(nl["nv"]  for nl in _sx["nhan_luc"])
         _total_may = sum(mm["sl"]  for mm in _sx["may_moc"])
@@ -2599,6 +2644,34 @@ with tab_nanluc:
         _wc3.metric("Tuần (ước tính)", f"{round(_wif_min/4.33):,} m²")
         _wc4.metric("Tổng công nhân SX", f"{_wif_total_nv} người",
                     delta=f"{_delta_nv:+} người", delta_color="normal")
+
+        # ── Cảnh báo What-if vs KHSX ─────────────────────────────────────────
+        _wif_peak = st.session_state.get("khsx_peak_demand", 0)
+        _wif_over = [ml for ml, v in st.session_state.get("khsx_monthly_totals", {}).items()
+                     if v > _wif_min]
+        if _wif_peak > 0:
+            _wif_pct = round(_wif_peak / _wif_min * 100, 1) if _wif_min > 0 else 0
+            if len(_wif_over) > 0:
+                st.error(
+                    f"🚨 **Năng lực mới {_wif_min:,} m²/tháng — vẫn CHƯA đáp ứng KHSX!**  \n"
+                    f"📈 Đỉnh tải KHSX: **{_wif_peak:,} m²/tháng** ({_wif_pct}% năng lực mới)  \n"
+                    f"🔴 Còn **{len(_wif_over)} tháng quá tải:** {', '.join(_wif_over)}  \n"
+                    f"💡 Cần đạt ít nhất **{_wif_peak:,} m²/tháng** — "
+                    f"thiếu **{_wif_peak - _wif_min:,} m²/tháng** nữa"
+                )
+            elif _wif_pct >= 90:
+                st.warning(
+                    f"⚠️ **Năng lực mới gần chạm giới hạn KHSX** ({_wif_pct}%)  \n"
+                    f"💡 Khuyến nghị tăng thêm để có buffer an toàn."
+                )
+            else:
+                st.success(
+                    f"✅ **Năng lực mới {_wif_min:,} m²/tháng ĐÁP ỨNG đủ KHSX!**  \n"
+                    f"📈 Đỉnh tải: {_wif_peak:,} m² = {_wif_pct}% — "
+                    f"Dư: **{_wif_min - _wif_peak:,} m²/tháng**"
+                )
+        else:
+            st.info("ℹ️ Chưa có dữ liệu KHSX. Tải file kế hoạch ở tab **📊 Kế Hoạch Sản Xuất** để so sánh.")
 
         # Chart: green (current) vs blue (what-if)
         _stage_names = [s["cong_doan"] for s in _wif_stage_caps]
