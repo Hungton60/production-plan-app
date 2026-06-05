@@ -2563,7 +2563,19 @@ with tab_nanluc:
 
         # ── What-if Simulation ────────────────────────────────────────────────
         st.subheader("🎛️ What-if: Điều chỉnh máy móc & nhân lực lắp ráp")
-        st.caption("Thay đổi số lượng máy hoặc số NV lắp ráp. Số công nhân vận hành máy tự động tính theo tỷ lệ NV/máy.")
+        
+        _col_hdr, _col_reset = st.columns([6, 1])
+        with _col_hdr:
+            st.caption("Thay đổi số lượng máy hoặc số NV lắp ráp. Số công nhân vận hành máy tự động tính theo tỷ lệ NV/máy.")
+        with _col_reset:
+            if st.button("🔄 Reset", key="wif_reset", help="Phục hồi về giá trị ban đầu"):
+                # Xóa tất cả what-if keys khỏi session state
+                for mm in _sx["may_moc"]:
+                    st.session_state.pop(f"wif_m_{mm['ma']}", None)
+                for _nl in _sx["nhan_luc"]:
+                    if _nl["nang_suat_m2_gio"] is not None:
+                        st.session_state.pop(f"wif_nv_{_nl['to']}", None)
+                st.rerun()
 
         # Find assembly team = team có "lắp" trong tên (hoặc team cuối cùng có NS trực tiếp)
         _assembly_team = next(
@@ -2728,7 +2740,7 @@ with tab_nanluc:
         _wif_fig.add_trace(go.Bar(
             x=_stage_names, 
             y=_new_caps, 
-            name="Năng suất giả định",
+            name="Năng suất sau khi điều chỉnh",
             marker=dict(color="#74b9ff"),  # Blue filled
             text=[f"{v:,}" for v in _new_caps],
             textposition="outside",
