@@ -304,7 +304,7 @@ st.markdown("""
 <div class="dash-title">
   <div style="font-size:2.2rem">🏭</div>
   <div>
-    <h1>Kế Hoạch Sản Xuất – Nhà Máy QDP <span style="font-size:0.5em;color:#888;font-weight:400">v5.6.26</span></h1>
+    <h1>Kế Hoạch Sản Xuất – Nhà Máy QDP <span style="font-size:0.5em;color:#aaaaaa;font-weight:400">v5.6.26</span></h1>
     <p>Dashboard quản lý tải trọng &amp; tiến độ sản xuất nhôm kính</p>
   </div>
 </div>
@@ -312,6 +312,11 @@ st.markdown("""
 
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
+
+st.sidebar.markdown(
+    "<div style='text-align:right;color:#aaa;font-size:0.75rem;margin-bottom:8px'>📦 version 5.6.26</div>",
+    unsafe_allow_html=True
+)
 
 # ── Tải file Năng Lực SX (đặt TRƯỚC các input để lấy giá trị default) ─────────
 st.sidebar.header("🔧 Năng Lực Sản Xuất")
@@ -1139,7 +1144,7 @@ with tab_dash:
 <div class="banner">
   <div style="font-size:1.6rem">🏭</div>
   <div style="flex:1">
-    <h1>Kế Hoạch Sản Xuất – Nhà Máy QDP <span style="font-size:0.5em;color:#888;font-weight:400">v5.6.26</span></h1>
+    <h1>Kế Hoạch Sản Xuất – Nhà Máy QDP <span style="font-size:0.5em;color:#aaaaaa;font-weight:400">v5.6.26</span></h1>
     <p>Dashboard quản lý tải trọng &amp; tiến độ sản xuất nhôm kính &nbsp;|&nbsp; In ngày: {td.strftime("%d/%m/%Y")}</p>
   </div>
 </div>
