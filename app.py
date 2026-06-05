@@ -1642,16 +1642,32 @@ with tab_plan:
                         })
                     df_summary = pd.DataFrame(summary_rows)
 
-                    # ── Lưu peak demand vào session state để dùng ở tab Năng Lực SX ──
+                    # ── Lưu BASE peak demand vào session state ──────────────
                     _monthly_totals_w = {ml: round(sum(load_data_w[ml].values())) for ml in month_labels}
                     _peak_month_label = max(_monthly_totals_w, key=_monthly_totals_w.get) if _monthly_totals_w else None
                     _peak_demand      = _monthly_totals_w.get(_peak_month_label, 0)
                     _overload_months  = [ml for ml, v in _monthly_totals_w.items() if v > cap_monthly]
-                    st.session_state["khsx_peak_demand"]     = _peak_demand
-                    st.session_state["khsx_peak_month"]      = _peak_month_label
-                    st.session_state["khsx_overload_months"] = _overload_months
-                    st.session_state["khsx_monthly_totals"]  = _monthly_totals_w
-                    st.session_state["khsx_cap_monthly"]     = cap_monthly
+                    # Lưu base (luôn cập nhật theo file)
+                    st.session_state["khsx_base_peak"]         = _peak_demand
+                    st.session_state["khsx_base_month"]        = _peak_month_label
+                    st.session_state["khsx_base_overload"]     = _overload_months
+                    st.session_state["khsx_base_totals"]       = _monthly_totals_w
+                    st.session_state["khsx_cap_monthly"]       = cap_monthly
+                    # Effective = max(base, whatif) — whatif chỉ bị ghi đè khi click button
+                    _wif_peak_saved = st.session_state.get("khsx_whatif_peak", 0)
+                    if _peak_demand >= _wif_peak_saved:
+                        # Base lớn hơn what-if → reset whatif
+                        st.session_state["khsx_whatif_peak"]    = 0
+                        st.session_state["khsx_whatif_totals"]  = {}
+                    # Effective values for warnings
+                    _eff_totals  = st.session_state.get("khsx_whatif_totals") or _monthly_totals_w
+                    _eff_peak    = max(_peak_demand, st.session_state.get("khsx_whatif_peak", 0))
+                    _eff_month   = st.session_state.get("khsx_whatif_month", _peak_month_label) if _eff_peak > _peak_demand else _peak_month_label
+                    _eff_over    = [ml for ml, v in _eff_totals.items() if v > cap_monthly]
+                    st.session_state["khsx_peak_demand"]     = _eff_peak
+                    st.session_state["khsx_peak_month"]      = _eff_month
+                    st.session_state["khsx_overload_months"] = _eff_over
+                    st.session_state["khsx_monthly_totals"]  = _eff_totals
 
                     # ── KPI cards ───────────────────────────────────────────────
                     n_overload = int((df_summary["% Sử dụng"] >= 100).sum())
@@ -2009,22 +2025,22 @@ with tab_plan:
                                     use_container_width=True, hide_index=True,
                                 )
 
-                                # ── Lưu peak demand (có dự án mới) vào session state ──
-                                # → Năng Lực SX tab sẽ tự cảnh báo nếu vượt năng lực
-                                _sim_monthly_totals = {}
-                                for row_s in sim_rows:
-                                    ml_s = row_s["Tháng"]
-                                    _sim_monthly_totals[ml_s] = row_s["Tổng (m²)"]
+                                # ── Lưu what-if peak vào key RIÊNG — không bị rerun ghi đè ──
+                                _sim_monthly_totals = {r["Tháng"]: r["Tổng (m²)"] for r in sim_rows}
                                 _sim_peak_month = max(_sim_monthly_totals, key=_sim_monthly_totals.get) if _sim_monthly_totals else None
                                 _sim_peak       = _sim_monthly_totals.get(_sim_peak_month, 0)
                                 _sim_over       = [ml for ml, v in _sim_monthly_totals.items() if v > cap_monthly]
-                                # Chỉ update nếu peak cao hơn hiện tại
-                                if _sim_peak > st.session_state.get("khsx_peak_demand", 0):
-                                    st.session_state["khsx_peak_demand"]     = _sim_peak
-                                    st.session_state["khsx_peak_month"]      = _sim_peak_month
-                                    st.session_state["khsx_overload_months"] = _sim_over
-                                    st.session_state["khsx_monthly_totals"]  = _sim_monthly_totals
-                                    st.info(f"📊 Đã cập nhật dữ liệu sang tab **Năng Lực SX** — peak mới: **{_sim_peak:,} m²/tháng**")
+                                # Luôn lưu what-if riêng (kể cả nhỏ hơn base)
+                                st.session_state["khsx_whatif_peak"]    = _sim_peak
+                                st.session_state["khsx_whatif_month"]   = _sim_peak_month
+                                st.session_state["khsx_whatif_totals"]  = _sim_monthly_totals
+                                # Cập nhật effective values
+                                st.session_state["khsx_peak_demand"]     = _sim_peak
+                                st.session_state["khsx_peak_month"]      = _sim_peak_month
+                                st.session_state["khsx_overload_months"] = _sim_over
+                                st.session_state["khsx_monthly_totals"]  = _sim_monthly_totals
+                                if _sim_peak > st.session_state.get("khsx_base_peak", 0):
+                                    st.info(f"📊 Đã cập nhật sang tab **Năng Lực SX** — peak mới: **{_sim_peak:,} m²/tháng**")
 
                     # (Download ở cuối trang, sau khi weekly_load được tính)
 
