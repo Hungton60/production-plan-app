@@ -196,7 +196,7 @@ def parse_sx_input(xl_sx):
 
     return out
 
-st.set_page_config(page_title="Kế Hoạch SX – QDP", layout="wide", page_icon="🏭")
+st.set_page_config(page_title="Kế Hoạch SX – QDP v5.6.26", layout="wide", page_icon="🏭")
 
 # Đảm bảo mobile không thu nhỏ font / scale trang
 st.markdown(
@@ -304,7 +304,7 @@ st.markdown("""
 <div class="dash-title">
   <div style="font-size:2.2rem">🏭</div>
   <div>
-    <h1>Kế Hoạch Sản Xuất – Nhà Máy QDP</h1>
+    <h1>Kế Hoạch Sản Xuất – Nhà Máy QDP <span style="font-size:0.5em;color:#888;font-weight:400">v5.6.26</span></h1>
     <p>Dashboard quản lý tải trọng &amp; tiến độ sản xuất nhôm kính</p>
   </div>
 </div>
@@ -1139,7 +1139,7 @@ with tab_dash:
 <div class="banner">
   <div style="font-size:1.6rem">🏭</div>
   <div style="flex:1">
-    <h1>Kế Hoạch Sản Xuất – Nhà Máy QDP</h1>
+    <h1>Kế Hoạch Sản Xuất – Nhà Máy QDP <span style="font-size:0.5em;color:#888;font-weight:400">v5.6.26</span></h1>
     <p>Dashboard quản lý tải trọng &amp; tiến độ sản xuất nhôm kính &nbsp;|&nbsp; In ngày: {td.strftime("%d/%m/%Y")}</p>
   </div>
 </div>
