@@ -2009,6 +2009,23 @@ with tab_plan:
                                     use_container_width=True, hide_index=True,
                                 )
 
+                                # ── Lưu peak demand (có dự án mới) vào session state ──
+                                # → Năng Lực SX tab sẽ tự cảnh báo nếu vượt năng lực
+                                _sim_monthly_totals = {}
+                                for row_s in sim_rows:
+                                    ml_s = row_s["Tháng"]
+                                    _sim_monthly_totals[ml_s] = row_s["Tổng (m²)"]
+                                _sim_peak_month = max(_sim_monthly_totals, key=_sim_monthly_totals.get) if _sim_monthly_totals else None
+                                _sim_peak       = _sim_monthly_totals.get(_sim_peak_month, 0)
+                                _sim_over       = [ml for ml, v in _sim_monthly_totals.items() if v > cap_monthly]
+                                # Chỉ update nếu peak cao hơn hiện tại
+                                if _sim_peak > st.session_state.get("khsx_peak_demand", 0):
+                                    st.session_state["khsx_peak_demand"]     = _sim_peak
+                                    st.session_state["khsx_peak_month"]      = _sim_peak_month
+                                    st.session_state["khsx_overload_months"] = _sim_over
+                                    st.session_state["khsx_monthly_totals"]  = _sim_monthly_totals
+                                    st.info(f"📊 Đã cập nhật dữ liệu sang tab **Năng Lực SX** — peak mới: **{_sim_peak:,} m²/tháng**")
+
                     # (Download ở cuối trang, sau khi weekly_load được tính)
 
                     # ══════════════════════════════════════════════════════════════════
