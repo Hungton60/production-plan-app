@@ -819,7 +819,7 @@ with tab_dash:
 
             bar_c = [_bar_color(v) for v in pcts]
             fig_bar = go.Figure(go.Bar(
-                x=ml, y=[round(load[x]) for x in ml],
+                x=ml, y=[round(load[x]) if load[x] == load[x] else 0 for x in ml],
                 marker_color=bar_c,
                 hovertemplate="<b>%{x}</b><br>%{y:,.0f} m²  (%{customdata:.1f}%)<extra></extra>",
                 customdata=pcts,
