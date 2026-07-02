@@ -477,20 +477,33 @@ def parse_projects(df):
     xs_col   = end_col + 1   # cột XS hoặc ghi chú
 
     projects = []
+    skipped  = []   # ← MỚI: lưu lại các dòng bị bỏ qua + lý do
     skip = {"nan", "", "TÊN DỰ ÁN", "GHI CHÚ:", "XS (hệ số)"}
-    for _, row in df.iterrows():
+    for row_idx, row in df.iterrows():
         if len(row) <= end_col:
             continue
         name = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
         if name in skip:
             continue
+
+        display_name = name if name else f"(dòng {row_idx + 1} — không có tên)"
+
         try:
             m2 = float(row.iloc[2])
         except (ValueError, TypeError):
+            skipped.append({"name": display_name, "reason": "Thiếu / sai Khối lượng (m²)"})
             continue
+
         start = parse_date(row.iloc[3])
         end   = parse_date(row.iloc[end_col])
-        if start is None or end is None:
+        if start is None and end is None:
+            skipped.append({"name": display_name, "reason": "Thiếu cả Ngày bắt đầu và Ngày hoàn thành"})
+            continue
+        if start is None:
+            skipped.append({"name": display_name, "reason": "Thiếu / sai Ngày bắt đầu thực hiện"})
+            continue
+        if end is None:
+            skipped.append({"name": display_name, "reason": "Thiếu / sai Ngày hoàn thành"})
             continue
 
         # Đọc xác suất: ưu tiên cột XS số (0–1 hoặc 1–100), fallback text
@@ -513,7 +526,7 @@ def parse_projects(df):
             "start": start, "end": end,
             "prob": prob, "status": status_label(prob),
         })
-    return projects
+    return projects, skipped
 
 def capacity_status(pct):
     if pct >= 100: return "🔴 QUÁ TẢI"
@@ -1240,7 +1253,16 @@ with tab_plan:
                 df_raw = None
 
             if df_raw is not None:
-                projects = parse_projects(df_raw)
+                projects, skipped_rows = parse_projects(df_raw)
+
+                if skipped_rows:
+                    st.warning(
+                        f"⚠️ **Có {len(skipped_rows)} dòng bị BỎ QUA vì thiếu dữ liệu — "
+                        "các dự án này sẽ KHÔNG xuất hiện trong kế hoạch:**\n\n"
+                        + "\n".join(f"- **{r['name']}** — {r['reason']}" for r in skipped_rows)
+                        + "\n\nVui lòng bổ sung đầy đủ **Tên dự án, Khối lượng (m²), "
+                        "Ngày bắt đầu, Ngày hoàn thành** trong file Excel rồi tải lại."
+                    )
 
                 if not projects:
                     st.error("Không parse được dự án nào. Kiểm tra lại file.")
