@@ -477,44 +477,57 @@ def parse_projects(df):
     xs_col   = end_col + 1   # cột XS hoặc ghi chú
 
     projects = []
-    skipped  = []   # ← MỚI: lưu lại các dòng bị bỏ qua + lý do
+    skipped  = []   # ← lưu lại các dòng có tên nhưng thiếu dữ liệu + lý do
     skip = {"nan", "", "TÊN DỰ ÁN", "GHI CHÚ:", "XS (hệ số)"}
+
+    # ── Tìm dòng tiêu đề cột (ô "TÊN DỰ ÁN") làm MỐC ─────────────────────────
+    # Mọi dòng NẰM TRÊN mốc này (ví dụ dòng tiêu đề lớn "KẾ HOẠCH SẢN XUẤT...")
+    # luôn được bỏ qua âm thầm, không cảnh báo — vì đó chắc chắn không phải
+    # dữ liệu dự án. Mọi dòng NẰM DƯỚI mốc này, hễ có tên dự án mà thiếu bất
+    # kỳ cột dữ liệu nào (Khối lượng / Ngày bắt đầu / Ngày hoàn thành) đều bị
+    # đưa vào danh sách cảnh báo.
+    header_idx = None
     for row_idx, row in df.iterrows():
+        _cell = str(row.iloc[1]).strip().upper() if len(row) > 1 and pd.notna(row.iloc[1]) else ""
+        if _cell == "TÊN DỰ ÁN":
+            header_idx = row_idx
+            break
+
+    for row_idx, row in df.iterrows():
+        if header_idx is not None and row_idx <= header_idx:
+            continue   # dòng tiêu đề lớn hoặc chính dòng tên cột → bỏ qua âm thầm
         if len(row) <= end_col:
             continue
-        name = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
-        if name in skip:
-            continue
 
-        # Dòng trống hoàn toàn ở cả 3 cột dữ liệu chính (Khối lượng, Bắt đầu,
-        # Kết thúc) → nhiều khả năng là dòng tiêu đề / ghi chú, KHÔNG phải dự
-        # án thật → bỏ qua âm thầm, không đưa vào danh sách cảnh báo.
+        name = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
+        if name in skip or not name:
+            continue   # dòng hoàn toàn không có tên dự án → bỏ qua âm thầm
+
         _m2_raw    = row.iloc[2] if len(row) > 2 else None
         _start_raw = row.iloc[3] if len(row) > 3 else None
         _end_raw   = row.iloc[end_col] if len(row) > end_col else None
-        if pd.isna(_m2_raw) and pd.isna(_start_raw) and pd.isna(_end_raw):
-            continue
 
-        display_name = name if name else f"(dòng {row_idx + 1} — không có tên)"
+        # ── Kiểm tra TỪNG cột, gom hết các cột bị thiếu vào 1 cảnh báo ───────
+        missing = []
 
+        m2 = None
         try:
             m2 = float(_m2_raw)
             if pd.isna(m2):
                 raise ValueError
         except (ValueError, TypeError):
-            skipped.append({"name": display_name, "reason": "Thiếu / sai Khối lượng (m²)"})
-            continue
+            missing.append("Khối lượng (m²)")
 
         start = parse_date(_start_raw)
-        end   = parse_date(_end_raw)
-        if start is None and end is None:
-            skipped.append({"name": display_name, "reason": "Thiếu cả Ngày bắt đầu và Ngày hoàn thành"})
-            continue
         if start is None:
-            skipped.append({"name": display_name, "reason": "Thiếu / sai Ngày bắt đầu thực hiện"})
-            continue
+            missing.append("Ngày bắt đầu thực hiện")
+
+        end = parse_date(_end_raw)
         if end is None:
-            skipped.append({"name": display_name, "reason": "Thiếu / sai Ngày hoàn thành"})
+            missing.append("Ngày hoàn thành")
+
+        if missing:
+            skipped.append({"name": name, "reason": "Thiếu " + ", ".join(missing)})
             continue
 
         # Đọc xác suất: ưu tiên cột XS số (0–1 hoặc 1–100), fallback text
