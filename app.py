@@ -486,16 +486,27 @@ def parse_projects(df):
         if name in skip:
             continue
 
+        # Dòng trống hoàn toàn ở cả 3 cột dữ liệu chính (Khối lượng, Bắt đầu,
+        # Kết thúc) → nhiều khả năng là dòng tiêu đề / ghi chú, KHÔNG phải dự
+        # án thật → bỏ qua âm thầm, không đưa vào danh sách cảnh báo.
+        _m2_raw    = row.iloc[2] if len(row) > 2 else None
+        _start_raw = row.iloc[3] if len(row) > 3 else None
+        _end_raw   = row.iloc[end_col] if len(row) > end_col else None
+        if pd.isna(_m2_raw) and pd.isna(_start_raw) and pd.isna(_end_raw):
+            continue
+
         display_name = name if name else f"(dòng {row_idx + 1} — không có tên)"
 
         try:
-            m2 = float(row.iloc[2])
+            m2 = float(_m2_raw)
+            if pd.isna(m2):
+                raise ValueError
         except (ValueError, TypeError):
             skipped.append({"name": display_name, "reason": "Thiếu / sai Khối lượng (m²)"})
             continue
 
-        start = parse_date(row.iloc[3])
-        end   = parse_date(row.iloc[end_col])
+        start = parse_date(_start_raw)
+        end   = parse_date(_end_raw)
         if start is None and end is None:
             skipped.append({"name": display_name, "reason": "Thiếu cả Ngày bắt đầu và Ngày hoàn thành"})
             continue
